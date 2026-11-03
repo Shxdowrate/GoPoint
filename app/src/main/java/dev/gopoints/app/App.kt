@@ -5,12 +5,14 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import dev.gopoints.app.data.Prefs
 import dev.gopoints.app.data.Store
+import dev.gopoints.app.route.RouteStore
 
 class App : Application() {
     override fun onCreate() {
         super.onCreate()
         Prefs.init(this)
         Store.init(this)
+        RouteStore.init(this)
         createChannels()
     }
 
