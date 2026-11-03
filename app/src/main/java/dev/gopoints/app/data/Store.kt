@@ -97,6 +97,15 @@ object Store {
         version.value++
     }
 
+    /** Пробег пишем и в день, и в текущую смену. */
+    fun addDistance(d: Double) = update { day ->
+        val last = day.shifts.lastOrNull()
+        day.copy(
+            distanceM = day.distanceM + d,
+            shifts = if (last != null && last.end == null) day.shifts.dropLast(1) + last.copy(distanceM = last.distanceM + d) else day.shifts,
+        )
+    }
+
     fun setNote(id: Long, note: String) = update { d ->
         d.copy(marks = d.marks.map { if (it.id == id) it.copy(note = note) else it })
     }

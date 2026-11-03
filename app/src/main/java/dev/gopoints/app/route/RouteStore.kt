@@ -19,6 +19,8 @@ data class Stop(
     val waybill: String? = null,
     val window: String? = null,
     val geo: GeoState = GeoState.PENDING,
+    /** Отложена — в конец маршрута. */
+    val postponed: Boolean = false,
 ) {
     val hasCoords get() = lat != null && lon != null
 
@@ -66,6 +68,14 @@ object RouteStore {
         set(_state.value.copy(stops = _state.value.stops.map { if (it.id == id) change(it) else it }))
     }
 
+    /** Отложить (в конец, порядок остальных не трогаем) или вернуть. */
+    fun postpone(ids: Set<Long>, value: Boolean) = synchronized(this) {
+        val st = _state.value
+        val marked = st.stops.map { if (it.id in ids) it.copy(postponed = value) else it }
+        val ordered = if (value) marked.filter { it.id !in ids } + marked.filter { it.id in ids } else marked
+        set(st.copy(stops = ordered))
+    }
+
     fun setOrder(stops: List<Stop>) = synchronized(this) { set(RouteState(stops, optimized = true)) }
 
     fun clear() = synchronized(this) { set(RouteState()) }
@@ -78,6 +88,7 @@ object RouteStore {
                     put("id", p.id); put("name", p.name); put("addr", p.address); put("geo", p.geo.name)
                     p.lat?.let { put("lat", it) }; p.lon?.let { put("lon", it) }
                     p.waybill?.let { put("wb", it) }; p.window?.let { put("win", it) }
+                    put("later", p.postponed)
                 })
             }
         })
@@ -97,6 +108,7 @@ object RouteStore {
                     waybill = if (p.isNull("wb")) null else p.getString("wb"),
                     window = if (p.isNull("win")) null else p.getString("win"),
                     geo = runCatching { GeoState.valueOf(p.optString("geo")) }.getOrDefault(GeoState.PENDING),
+                    postponed = p.optBoolean("later", false),
                 )
             },
         )

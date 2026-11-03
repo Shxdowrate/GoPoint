@@ -41,6 +41,7 @@ fun SettingsScreen(onBack: () -> Unit, onAskNotifications: () -> Unit) {
     var volume by remember { mutableStateOf(Prefs.volumeTrigger) }
     var auto by remember { mutableStateOf(Prefs.autoMark) }
     var autoMin by remember { mutableIntStateOf(Prefs.autoMarkMin) }
+    var replies by remember { mutableStateOf(Prefs.voiceReplies) }
     val pm = ctx.getSystemService(PowerManager::class.java)
     val batteryOk = pm.isIgnoringBatteryOptimizations(ctx.packageName)
 
@@ -70,8 +71,12 @@ fun SettingsScreen(onBack: () -> Unit, onAskNotifications: () -> Unit) {
             Column(Modifier.rise(60), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 SectionTitle("Отметки")
                 GCard {
-                    SwitchRow("Громкость вниз ×2", "Отметка без экрана. Пока идёт смена, громкость кнопками не меняется", volume) {
+                    SwitchRow("Громкость вниз ×2", "Работает и при выключенном экране. Кнопка гарнитуры — тоже отметка. Пока идёт смена, громкость кнопками не меняется", volume) {
                         volume = it; Prefs.volumeTrigger = it; applyToService()
+                    }
+                    Divider()
+                    SwitchRow("Голосовой ввод отвечает вслух", "Выключите — останутся текст на экране и короткие сигналы", replies) {
+                        replies = it; Prefs.voiceReplies = it
                     }
                     Divider()
                     SwitchRow("Автоотметка на стоянке", "Спрошу «отметить?», без ответа — отмечу сам", auto) {

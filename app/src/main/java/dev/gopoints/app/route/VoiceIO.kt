@@ -2,6 +2,8 @@ package dev.gopoints.app.route
 
 import android.content.Context
 import android.content.Intent
+import android.media.AudioManager
+import android.media.ToneGenerator
 import android.os.Bundle
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
@@ -29,6 +31,12 @@ class VoiceIO(ctx: Context) {
     private val recognizer: SpeechRecognizer = SpeechRecognizer.createSpeechRecognizer(ctx)
     private var waiting: CancellableContinuation<String?>? = null
 
+    private val tones: ToneGenerator? = runCatching { ToneGenerator(AudioManager.STREAM_MUSIC, 80) }.getOrNull()
+    private var voiceChosen = false
+
+    /** false — без озвучки: только текст на экране и короткие сигналы. */
+    var speak: Boolean = true
+
     var onPartial: (String) -> Unit = {}
     var onLevel: (Float) -> Unit = {}
 
@@ -36,14 +44,38 @@ class VoiceIO(ctx: Context) {
         fun available(ctx: Context) = SpeechRecognizer.isRecognitionAvailable(ctx)
     }
 
-    /** Сказать вслух и дождаться конца фразы. Без синтеза речи — просто пауза. */
+    /** Короткий сигнал: «принято» или «не расслышал». */
+    suspend fun beep(ok: Boolean) {
+        tones?.startTone(if (ok) ToneGenerator.TONE_PROP_ACK else ToneGenerator.TONE_PROP_NACK, 160)
+        delay(260)
+    }
+
+    /** Лучший установленный русский голос, чуть быстрее обычного. */
+    private fun chooseVoice() {
+        if (voiceChosen) return
+        voiceChosen = true
+        tts.language = RU
+        tts.setSpeechRate(1.12f)
+        runCatching {
+            tts.voices
+                ?.filter { it.locale.language == "ru" && TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED !in it.features }
+                ?.maxByOrNull { it.quality * 10 + if (it.isNetworkConnectionRequired) 0 else 1 }
+                ?.let { tts.voice = it }
+        }
+    }
+
+    /** Сказать вслух и дождаться конца фразы. Без озвучки — короткая пауза. */
     suspend fun say(text: String) {
-        val ok = withTimeoutOrNull(3000) { ready.await() } ?: false
-        if (!ok) {
-            delay(400)
+        if (!speak) {
+            delay(150)
             return
         }
-        tts.language = RU
+        val ok = withTimeoutOrNull(3000) { ready.await() } ?: false
+        if (!ok) {
+            delay(300)
+            return
+        }
+        chooseVoice()
         val id = UUID.randomUUID().toString()
         withTimeoutOrNull(15_000) {
             suspendCancellableCoroutine { c ->
@@ -106,6 +138,7 @@ class VoiceIO(ctx: Context) {
     }
 
     fun release() {
+        tones?.release()
         recognizer.destroy()
         tts.shutdown()
     }

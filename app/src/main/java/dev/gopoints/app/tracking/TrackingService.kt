@@ -11,6 +11,9 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.location.Location
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioTrack
 import android.media.VolumeProvider
 import android.media.session.MediaSession
 import android.media.session.PlaybackState
@@ -21,6 +24,7 @@ import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import android.view.KeyEvent
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
@@ -79,6 +83,9 @@ class TrackingService : Service() {
         /** Ждём ответа на «отметить?» перед автоотметкой. */
         private const val AUTO_TIMEOUT = 120_000L
 
+        /** Только «кнопка гарнитуры» и play/pause: голые PLAY/PAUSE шлют магнитолы при подключении. */
+        private val MEDIA_KEYS = setOf(KeyEvent.KEYCODE_HEADSETHOOK, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE)
+
         private val _running = MutableStateFlow(false)
         val running: StateFlow<Boolean> = _running
 
@@ -107,6 +114,7 @@ class TrackingService : Service() {
     private var tickJob: Job? = null
 
     private var session: MediaSession? = null
+    private var silence: AudioTrack? = null
     private var lastVolume = 0L
 
     private val callback = object : LocationCallback() {
@@ -212,6 +220,8 @@ class TrackingService : Service() {
         updating = false
         session?.release()
         session = null
+        silence?.let { runCatching { it.stop(); it.release() } }
+        silence = null
         tickJob?.cancel()
         tickJob = null
         autoJob?.cancel()
@@ -224,6 +234,7 @@ class TrackingService : Service() {
     override fun onDestroy() {
         if (updating) fused.removeLocationUpdates(callback)
         session?.release()
+        silence?.let { runCatching { it.stop(); it.release() } }
         _running.value = false
         scope.cancel()
         super.onDestroy()
@@ -249,7 +260,7 @@ class TrackingService : Service() {
         } else {
             val d = prev.distanceTo(loc)
             if (d >= 20f) {
-                if (d < 3000f) Store.update { it.copy(distanceM = it.distanceM + d) }
+                if (d < 3000f) Store.addDistance(d.toDouble())
                 lastForDistance = loc
             }
         }
@@ -292,7 +303,10 @@ class TrackingService : Service() {
 
     private fun markAtAnchor(auto: Boolean) {
         val a = anchor ?: current ?: return
-        addMark(a, if (anchorAt > 0) anchorAt else System.currentTimeMillis(), auto)
+        // Не раньше начала смены — иначе точка «уедет» в прошлую смену.
+        val shiftStart = Store.today.value.shifts.lastOrNull()?.start ?: 0L
+        val t = if (anchorAt > 0) maxOf(anchorAt, shiftStart) else System.currentTimeMillis()
+        addMark(a, t, auto)
     }
 
     private fun addMark(l: Location, time: Long, auto: Boolean) {
@@ -343,24 +357,71 @@ class TrackingService : Service() {
     // ---------------------------------------------------------------- громкость
 
     /**
-     * Медиасессия с «удалённой» громкостью: пока смена идёт, кнопки громкости приходят сюда,
-     * даже при выключенном экране (на большинстве прошивок). Двойное «вниз» — отметка.
+     * Кнопки громкости при погашенном экране Android отдаёт той медиасессии, которая сейчас
+     * «играет». Поэтому, пока идёт смена, крутим беззвучную петлю (нули, без аудиофокуса —
+     * музыке не мешает) и держим сессию с «удалённой» громкостью: нажатия приходят сюда.
+     * Двойное «вниз» — отметка. Кнопка гарнитуры / BT-пульта (play/pause) — тоже отметка.
      */
     private fun setupVolume() {
         session?.release()
         session = null
+        silence?.let { runCatching { it.stop(); it.release() } }
+        silence = null
         if (!Prefs.volumeTrigger) return
+
+        silence = runCatching { silentLoop() }.getOrNull()
         session = MediaSession(this, "GoPoints").apply {
             setPlaybackToRemote(object : VolumeProvider(VOLUME_CONTROL_RELATIVE, 100, 50) {
                 override fun onAdjustVolume(direction: Int) {
                     if (direction < 0) onVolumeDown()
                 }
             })
+            setCallback(object : MediaSession.Callback() {
+                override fun onMediaButtonEvent(mediaButtonIntent: Intent): Boolean {
+                    @Suppress("DEPRECATION")
+                    val ev = mediaButtonIntent.getParcelableExtra<KeyEvent>(Intent.EXTRA_KEY_EVENT) ?: return false
+                    if (ev.action == KeyEvent.ACTION_DOWN && ev.repeatCount == 0 && ev.keyCode in MEDIA_KEYS) {
+                        markNow()
+                        return true
+                    }
+                    return ev.keyCode in MEDIA_KEYS
+                }
+            })
             setPlaybackState(
-                PlaybackState.Builder().setState(PlaybackState.STATE_PLAYING, 0L, 1f).build()
+                PlaybackState.Builder()
+                    .setActions(PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PAUSE or PlaybackState.ACTION_PLAY_PAUSE)
+                    .setState(PlaybackState.STATE_PLAYING, 0L, 1f)
+                    .build()
             )
             isActive = true
         }
+    }
+
+    /** Секунда тишины по кругу. */
+    private fun silentLoop(): AudioTrack {
+        val rate = 8000
+        val frames = rate
+        val track = AudioTrack.Builder()
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build()
+            )
+            .setAudioFormat(
+                AudioFormat.Builder()
+                    .setSampleRate(rate)
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                    .build()
+            )
+            .setTransferMode(AudioTrack.MODE_STATIC)
+            .setBufferSizeInBytes(frames * 2)
+            .build()
+        track.write(ShortArray(frames), 0, frames)
+        track.setLoopPoints(0, frames, -1)
+        track.play()
+        return track
     }
 
     private fun onVolumeDown() {
@@ -401,8 +462,10 @@ class TrackingService : Service() {
             .setContentIntent(openApp())
             .addAction(0, "Отметить", pending(ACT_MARK))
         if (d.isActive) {
-            b.setContentTitle("Смена ${hm(d.workedMs())} · ${points(d.marks.size)} · ${km(d.distanceM)}")
-            val last = d.marks.lastOrNull()
+            val sh = d.shifts.last()
+            val ms = d.marksIn(sh)
+            b.setContentTitle("Смена ${hm(sh.workedMs())} · ${points(ms.size)} · ${km(d.distOf(sh))}")
+            val last = ms.lastOrNull()
             b.setContentText(
                 if (last != null) "Последняя: ${clock(last.time)} — ${last.address ?: "адрес определяется"}"
                 else "Нажмите «Отметить» на точке или громкость вниз ×2"

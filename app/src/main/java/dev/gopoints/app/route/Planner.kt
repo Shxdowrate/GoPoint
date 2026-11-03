@@ -69,15 +69,9 @@ object Planner {
         return Eval(total, (t - startMin).toInt(), late, total + lateMin * 2)
     }
 
-    /**
-     * Порядок объезда: ближайший сосед от старта, потом улучшения (2-opt и перестановка одной точки).
-     * Опоздание к окну приёмки штрафуется (1 минута = 2 км), так что «до 12:00» уходит в начало.
-     */
-    fun plan(stops: List<Stop>, startLat: Double?, startLon: Double?, now: LocalTime = LocalTime.now()): Plan {
-        val vs = visits(stops)
-        val startMin = now.hour * 60 + now.minute
-        if (vs.isEmpty()) return Plan(emptyList(), 0.0, 0, 0)
-
+    /** Ближайший сосед от старта + улучшения (2-opt и перестановка одной точки). */
+    private fun optimize(vs: List<Visit>, startLat: Double?, startLon: Double?, startMin: Int): List<Visit> {
+        if (vs.size <= 1) return vs
         val left = vs.toMutableList()
         val order = mutableListOf<Visit>()
         var pLat = startLat ?: left.first().lat
@@ -92,7 +86,6 @@ object Planner {
             pLat = next.lat
             pLon = next.lon
         }
-
         var best = order.toList()
         var bestCost = eval(best, startLat, startLon, startMin).cost
         var improved = true
@@ -113,6 +106,37 @@ object Planner {
                 if (c < bestCost - 1e-6) { best = m; bestCost = c; improved = true }
             }
         }
+        return best
+    }
+
+    /**
+     * Порядок объезда. Опоздание к окну приёмки штрафуется (1 минута = 2 км), так что «до 12:00» уходит в начало.
+     * [firstStopId] — «начать с этой точки»: она первая, остальное считается уже от неё.
+     * Отложенные точки — в самом конце.
+     */
+    fun plan(
+        stops: List<Stop>,
+        startLat: Double?,
+        startLon: Double?,
+        now: LocalTime = LocalTime.now(),
+        firstStopId: Long? = null,
+    ): Plan {
+        val all = visits(stops)
+        val startMin = now.hour * 60 + now.minute
+        if (all.isEmpty()) return Plan(emptyList(), 0.0, 0, 0)
+        val first = firstStopId?.let { id -> all.firstOrNull { v -> v.stops.any { it.id == id } } }
+        val later = all.filter { v -> v != first && v.stops.all { it.postponed } }
+        val main = all.filter { it != first && it !in later }
+
+        val head = if (first != null) {
+            val toFirst = if (startLat != null && startLon != null) km(startLat, startLon, first.lat, first.lon) / SPEED_KMH * 60 else 0.0
+            val t = startMin + toFirst.toInt() + UNLOAD_MIN * first.stops.size
+            listOf(first) + optimize(main, first.lat, first.lon, t)
+        } else optimize(main, startLat, startLon, startMin)
+
+        val last = head.lastOrNull()
+        val tail = optimize(later, last?.lat ?: startLat, last?.lon ?: startLon, startMin + eval(head, startLat, startLon, startMin).minutes)
+        val best = head + tail
         val e = eval(best, startLat, startLon, startMin)
         return Plan(best, e.km, e.minutes, e.late)
     }

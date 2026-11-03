@@ -68,6 +68,10 @@ fun TodayScreen(onSettings: () -> Unit, onStart: () -> Unit, onVoiceNote: (Long)
     val now = rememberNow()
     LaunchedEffect(now / 60_000) { Store.refresh() }
     var expanded by remember { mutableStateOf<Long?>(null) }
+    var openShift by remember { mutableStateOf<Int?>(null) }
+    val shift = day.shifts.lastOrNull()
+    val shiftMarks = shift?.let { day.marksIn(it) } ?: emptyList()
+    val earlier = day.shifts.dropLast(1)
 
     LazyColumn(
         Modifier.fillMaxSize(),
@@ -81,7 +85,7 @@ fun TodayScreen(onSettings: () -> Unit, onStart: () -> Unit, onVoiceNote: (Long)
         }
         item {
             Column(Modifier.rise(200), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                SectionTitle("Отметки · ${day.marks.size}") {
+                SectionTitle("Отметки смены · ${shiftMarks.size}") {
                     if (day.marks.isNotEmpty()) {
                         Text(
                             "Отправить", color = C.Acc, fontSize = 14.sp, fontWeight = FontWeight.Medium,
@@ -90,15 +94,15 @@ fun TodayScreen(onSettings: () -> Unit, onStart: () -> Unit, onVoiceNote: (Long)
                     }
                 }
                 GCard {
-                    if (day.marks.isEmpty()) {
+                    if (shiftMarks.isEmpty()) {
                         Text(
                             if (day.isActive) "Пока пусто. На точке нажмите «Отметить» — или просто постойте, GoPoints спросит сам."
-                            else "Начните смену — и отметки за день появятся здесь.",
+                            else "Начните смену — и отметки появятся здесь.",
                             Modifier.padding(horizontal = 16.dp, vertical = 22.dp),
                             color = C.Muted, fontSize = 15.sp,
                         )
                     }
-                    day.marks.reversed().forEachIndexed { i, m ->
+                    shiftMarks.reversed().forEachIndexed { i, m ->
                         if (i > 0) Divider(start = 66.dp)
                         MarkRow(
                             day, m, now,
@@ -108,6 +112,44 @@ fun TodayScreen(onSettings: () -> Unit, onStart: () -> Unit, onVoiceNote: (Long)
                             onNote = { onVoiceNote(m.id) },
                             onDelete = { Store.deleteMark(day.date, m.id); expanded = null },
                         )
+                    }
+                }
+            }
+        }
+        if (earlier.isNotEmpty()) {
+            item {
+                Column(Modifier.rise(260), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    SectionTitle("Ранее сегодня")
+                    GCard {
+                        earlier.forEachIndexed { i, sh ->
+                            if (i > 0) Divider(start = 66.dp)
+                            val ms = day.marksIn(sh)
+                            Row(
+                                Modifier.fillMaxWidth()
+                                    .clickable { openShift = if (openShift == i) null else i }
+                                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                Tile("${i + 1}")
+                                Column(Modifier.weight(1f)) {
+                                    Text("Смена ${i + 1} · ${clock(sh.start)}–${sh.end?.let { clock(it) } ?: ""}", color = C.Ink, fontSize = 16.sp)
+                                    Text("${points(ms.size)} · ${km(day.distOf(sh))}", color = C.Muted, fontSize = 13.sp)
+                                }
+                                Text(hm(sh.workedMs(now)), color = C.Muted, fontSize = 14.sp)
+                            }
+                            AnimatedVisibility(openShift == i) {
+                                Column {
+                                    ms.reversed().forEach { m ->
+                                        Divider(start = 66.dp)
+                                        MarkRow(day, m, now, expanded = expanded == m.id, delayMs = 0,
+                                            onClick = { expanded = if (expanded == m.id) null else m.id },
+                                            onNote = { onVoiceNote(m.id) },
+                                            onDelete = { Store.deleteMark(day.date, m.id); expanded = null })
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -153,11 +195,14 @@ private fun StatusCard(day: DayLog, now: Long, onStart: () -> Unit, onVoiceNote:
         }
     }
     val active = day.isActive
+    val shift = day.shifts.lastOrNull()
+    val n = if (day.shifts.size > 1) " ${day.shifts.size}" else ""
     val label = when {
-        active -> "Смена идёт · с ${clock(day.shifts.last().start)}"
-        day.hasWork -> "Смена завершена"
-        else -> "Смена не начата"
+        shift == null -> "Смена не начата"
+        active -> "Смена$n идёт · с ${clock(shift.start)}"
+        else -> "Смена$n завершена · ${clock(shift.start)}–${shift.end?.let { clock(it) } ?: ""}"
     }
+    val shiftMarks = shift?.let { day.marksIn(it) } ?: emptyList()
     GCard(
         Modifier.rise(70)
             .then(if (active) Modifier.shadow(18.dp, CardShape, ambientColor = C.Acc, spotColor = C.AccDeep) else Modifier)
@@ -169,7 +214,7 @@ private fun StatusCard(day: DayLog, now: Long, onStart: () -> Unit, onVoiceNote:
                     Text(label, color = C.Muted, fontSize = 13.sp)
                 }
                 Text(
-                    hm(day.workedMs(now)),
+                    hm(shift?.workedMs(now) ?: 0L),
                     color = C.Ink, fontSize = 46.sp, fontWeight = FontWeight.SemiBold,
                     style = TextStyle(
                         fontFeatureSettings = "tnum",
@@ -177,7 +222,8 @@ private fun StatusCard(day: DayLog, now: Long, onStart: () -> Unit, onVoiceNote:
                     ),
                 )
                 Text(
-                    "${points(day.marks.size)} · ${km(day.distanceM)} · на точках ${hm(day.onPointsMs(now))}",
+                    if (shift == null) "Нажмите «Начать смену», когда выезжаете"
+                    else "${points(shiftMarks.size)} · ${km(day.distOf(shift))} · на точках ${hm(day.onPointsMs(shift, now))}",
                     color = C.Muted, fontSize = 14.sp,
                 )
             }
@@ -185,7 +231,7 @@ private fun StatusCard(day: DayLog, now: Long, onStart: () -> Unit, onVoiceNote:
                 GlowButton("Отметить точку", { TrackingService.send(ctx, TrackingService.ACT_MARK) }, height = 68.dp, icon = Ico.PIN, fontSize = 20.sp)
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     OutlineButton("Заметка", {
-                        day.marks.lastOrNull()?.let { onVoiceNote(it.id) }
+                        shiftMarks.lastOrNull()?.let { onVoiceNote(it.id) }
                     }, Modifier.weight(1f), icon = Ico.MIC)
                     OutlineButton(
                         if (confirmEnd) "Точно? Ещё раз" else "Завершить",

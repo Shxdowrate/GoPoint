@@ -1,14 +1,5 @@
 package dev.gopoints.app.ui
 
-import android.Manifest
-import android.annotation.SuppressLint
-import android.content.Context
-import android.content.pm.PackageManager
-import android.net.Uri
-import android.widget.Toast
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.PickVisualMediaRequest
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -58,10 +49,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import androidx.core.content.ContextCompat
-import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.google.android.gms.location.LocationServices
 import dev.gopoints.app.data.Mark
 import dev.gopoints.app.data.Store
 import dev.gopoints.app.data.dayTitle
@@ -69,19 +57,13 @@ import dev.gopoints.app.data.hm
 import dev.gopoints.app.data.km
 import dev.gopoints.app.data.plural
 import dev.gopoints.app.route.GeoState
-import dev.gopoints.app.route.Ocr
 import dev.gopoints.app.route.Planner
+import dev.gopoints.app.route.RouteActions
 import dev.gopoints.app.route.RouteStore
 import dev.gopoints.app.route.Stop
 import dev.gopoints.app.route.Visit
-import dev.gopoints.app.route.Waybill
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withContext
-import java.io.File
-import kotlin.coroutines.resume
 
 /** Черновик накладной после распознавания — пользователь проверяет и добавляет. */
 private data class Draft(
@@ -93,67 +75,22 @@ private data class Draft(
     val editId: Long? = null,
 )
 
-@SuppressLint("MissingPermission")
-private suspend fun lastLocation(ctx: Context): Pair<Double, Double>? {
-    if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
-        ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED
-    ) return null
-    return suspendCancellableCoroutine { cont ->
-        LocationServices.getFusedLocationProviderClient(ctx).lastLocation
-            .addOnSuccessListener { l -> if (cont.isActive) cont.resume(l?.let { it.latitude to it.longitude }) }
-            .addOnFailureListener { if (cont.isActive) cont.resume(null) }
-    }
-}
-
 private fun visitDone(v: Visit, marks: List<Mark>): Boolean =
     marks.any { Planner.km(v.lat, v.lon, it.lat, it.lon) < 0.15 }
 
 @Composable
-fun RouteScreen() {
+fun RouteScreen(onVoice: () -> Unit) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val st by RouteStore.state.collectAsStateWithLifecycle()
     val today by Store.today.collectAsStateWithLifecycle()
-    var busy by remember { mutableStateOf<String?>(null) }
+    val building by RouteActions.building.collectAsStateWithLifecycle()
     val drafts = remember { mutableStateListOf<Draft>() }
-    var shotUri by rememberSaveable { mutableStateOf<String?>(null) }
     var start by remember { mutableStateOf<Pair<Double, Double>?>(null) }
     var expanded by remember { mutableStateOf<Int?>(null) }
     var confirmClear by remember { mutableStateOf(false) }
-    var voice by rememberSaveable { mutableStateOf(false) }
-    LaunchedEffect(Unit) { start = lastLocation(ctx) }
+    LaunchedEffect(Unit) { start = RouteActions.lastLocation(ctx) }
     LaunchedEffect(confirmClear) { if (confirmClear) { delay(3000); confirmClear = false } }
-
-    fun process(uris: List<Uri>) {
-        scope.launch {
-            uris.forEachIndexed { i, u ->
-                busy = if (uris.size > 1) "Читаю накладную ${i + 1} из ${uris.size}…" else "Читаю накладную…"
-                try {
-                    val w = Waybill.parse(Ocr.recognize(ctx, u))
-                    drafts += Draft(w.name ?: "", w.street ?: "", w.number, w.window, w.name != null && w.street != null)
-                } catch (e: Exception) {
-                    Toast.makeText(ctx, e.message ?: "Не удалось распознать", Toast.LENGTH_LONG).show()
-                }
-            }
-            busy = null
-        }
-    }
-
-    val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
-        val u = shotUri
-        if (ok && u != null) process(listOf(Uri.parse(u)))
-    }
-    val gallery = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(20)) { uris ->
-        if (uris.isNotEmpty()) process(uris)
-    }
-
-    fun shoot() {
-        val dir = File(ctx.cacheDir, "shots").apply { mkdirs() }
-        val f = File(dir, "shot-${System.currentTimeMillis()}.jpg")
-        val u = FileProvider.getUriForFile(ctx, "${ctx.packageName}.files", f)
-        shotUri = u.toString()
-        camera.launch(u)
-    }
 
     fun save(d: Draft) {
         d.editId?.let { RouteStore.remove(it) }
@@ -164,23 +101,11 @@ fun RouteScreen() {
             waybill = d.waybill,
             window = d.window?.trim()?.takeIf { it.isNotEmpty() },
         )
-        RouteStore.add(s)
-        scope.launch {
-            val c = Planner.geocode(ctx, s.address)
-            RouteStore.update(s.id) { it.copy(lat = c?.first, lon = c?.second, geo = if (c != null) GeoState.OK else GeoState.MISSING) }
-        }
+        scope.launch { RouteActions.addAndLocate(ctx, s) }
     }
 
-    fun build() {
-        scope.launch {
-            busy = "Строю маршрут…"
-            val loc = lastLocation(ctx) ?: start
-            start = loc
-            val stops = RouteStore.state.value.stops
-            val plan = withContext(Dispatchers.Default) { Planner.plan(stops, loc?.first, loc?.second) }
-            RouteStore.setOrder(Planner.ordered(plan, stops))
-            busy = null
-        }
+    fun build(firstStopId: Long? = null) {
+        scope.launch { RouteActions.build(ctx, firstStopId)?.let { start = it } }
     }
 
     val visits = Planner.visits(st.stops)
@@ -216,9 +141,9 @@ fun RouteScreen() {
             GCard(Modifier.rise(70).shadow(16.dp, CardShape, ambientColor = C.Acc, spotColor = C.AccDeep)) {
                 Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 18.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                     if (st.stops.isEmpty()) {
-                        Text("Сфотографируйте накладные", color = C.Ink, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+                        Text("Продиктуйте точки", color = C.Ink, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
                         Text(
-                            "GoPoints прочитает грузополучателя и адрес, найдёт их на карте и построит порядок объезда с учётом времени приёмки.",
+                            "«Белогорье, Заводская 11» — «да» — следующая. GoPoints найдёт адреса на карте и построит порядок объезда.",
                             color = C.Muted, fontSize = 14.sp,
                         )
                     } else {
@@ -237,34 +162,25 @@ fun RouteScreen() {
                         ShimmerBar(if (total == 0) 0f else done.toFloat() / total)
                         if (!st.optimized) Text("Список изменился — постройте маршрут заново", color = C.Warn, fontSize = 13.sp)
                     }
-                    busy?.let { msg ->
+                    if (building) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             CircularProgressIndicator(Modifier.size(18.dp), color = C.Acc, strokeWidth = 2.dp)
-                            Text(msg, color = C.Soft, fontSize = 14.sp)
+                            Text("Строю маршрут…", color = C.Soft, fontSize = 14.sp)
                         }
                     }
                     when {
-                        st.stops.isEmpty() -> GlowButton("Сфотографировать накладную", ::shoot, height = 60.dp, icon = Ico.CAMERA, fontSize = 17.sp)
-                        !st.optimized -> GlowButton("Построить маршрут", ::build, height = 60.dp, icon = Ico.ROUTE, fontSize = 17.sp)
+                        st.stops.isEmpty() -> GlowButton("Добавить голосом", onVoice, height = 60.dp, icon = Ico.MIC, fontSize = 17.sp)
+                        !st.optimized -> GlowButton("Построить маршрут", { build() }, height = 60.dp, icon = Ico.ROUTE, fontSize = 17.sp)
                         else -> GlowButton("Открыть в Навигаторе", { Planner.openNavigator(ctx, ahead) }, height = 60.dp, icon = Ico.NAV, fontSize = 17.sp)
                     }
-                    val extra = buildList<Triple<String, Ico, () -> Unit>> {
-                        if (st.stops.isNotEmpty()) add(Triple("Фото", Ico.CAMERA, ::shoot))
-                        add(Triple("Голосом", Ico.MIC) { voice = true })
-                        add(Triple("Галерея", Ico.IMAGE) {
-                            gallery.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                        })
-                        add(Triple("Вручную", Ico.EDIT) { drafts += Draft("", "", null, null, complete = true) })
-                    }
-                    extra.chunked(2).forEach { row ->
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            row.forEach { (label, ico, action) -> OutlineButton(label, action, Modifier.weight(1f), icon = ico) }
-                        }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (st.stops.isNotEmpty()) OutlineButton("Голосом", onVoice, Modifier.weight(1f), icon = Ico.MIC)
+                        OutlineButton("Вручную", { drafts += Draft("", "", null, null, complete = true) }, Modifier.weight(1f), icon = Ico.EDIT)
                     }
                     if (st.optimized && st.stops.isNotEmpty()) {
                         Text(
                             "Перестроить от текущего места",
-                            Modifier.clickable(onClick = ::build).padding(vertical = 2.dp),
+                            Modifier.clickable { build() }.padding(vertical = 2.dp),
                             color = C.Acc, fontSize = 14.sp, fontWeight = FontWeight.Medium,
                         )
                     }
@@ -285,6 +201,12 @@ fun RouteScreen() {
                                 onClick = { expanded = if (expanded == i) null else i },
                                 onEdit = { s -> drafts += Draft(s.name, s.address, s.waybill, s.window, true, editId = s.id) },
                                 onDelete = { s -> RouteStore.remove(s.id) },
+                                onFirst = { expanded = null; build(v.stops.first().id) },
+                                onPostpone = { value ->
+                                    expanded = null
+                                    RouteStore.postpone(v.stops.map { it.id }.toSet(), value)
+                                    if (!value) build()
+                                },
                             )
                         }
                     }
@@ -310,11 +232,14 @@ fun RouteScreen() {
                                 Column(Modifier.weight(1f)) {
                                     Text(s.name, color = C.Ink, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                     Text(
-                                        if (s.geo == GeoState.PENDING) "${s.address} · ищу на карте…" else "${s.address} · не нашёл, нажмите исправить",
+                                        if (s.geo == GeoState.PENDING) "${s.address} · ищу на карте…" else "${s.address} · не нашёл — исправьте или удалите",
                                         color = if (s.geo == GeoState.PENDING) C.Muted else C.Warn, fontSize = 13.sp,
                                     )
                                 }
-                                GIcon(Ico.EDIT, C.Muted, size = 18.dp)
+                                Box(
+                                    Modifier.size(40.dp).clip(RoundedCornerShape(12.dp)).clickable { RouteStore.remove(s.id) },
+                                    contentAlignment = Alignment.Center,
+                                ) { GIcon(Ico.TRASH, C.Bad, size = 20.dp) }
                             }
                         }
                     }
@@ -329,7 +254,7 @@ fun RouteScreen() {
                     GCard {
                         doneVisits.forEachIndexed { i, v ->
                             if (i > 0) Divider(start = 66.dp)
-                            VisitRow(i + 1, v, current = false, done = true, expanded = false, delayMs = 240 + i * 50, onClick = {}, onEdit = {}, onDelete = {})
+                            VisitRow(i + 1, v, current = false, done = true, expanded = false, delayMs = 240 + i * 50, onClick = {}, onEdit = {}, onDelete = {}, onFirst = {}, onPostpone = {})
                         }
                     }
                 }
@@ -341,13 +266,12 @@ fun RouteScreen() {
         }
     }
 
-    if (voice) VoiceRoute(onClose = { voice = false }, onBuild = ::build)
-
     drafts.firstOrNull()?.let { d ->
         DraftDialog(
             d,
             onSave = { save(it); drafts.removeAt(0) },
             onSkip = { drafts.removeAt(0) },
+            onDelete = { id -> RouteStore.remove(id); drafts.removeAt(0) },
         )
     }
 }
@@ -363,8 +287,11 @@ private fun VisitRow(
     onClick: () -> Unit,
     onEdit: (Stop) -> Unit,
     onDelete: (Stop) -> Unit,
+    onFirst: () -> Unit,
+    onPostpone: (Boolean) -> Unit,
 ) {
     val first = v.stops.first()
+    val later = v.stops.all { it.postponed }
     val window = v.stops.mapNotNull { it.window }.firstOrNull()
     Column(Modifier.rise(delayMs)) {
         Row(
@@ -392,6 +319,11 @@ private fun VisitRow(
                     first.address + if (v.stops.size > 1) " · ${v.stops.size} накладные" else "",
                     color = C.Muted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
+                if (later && !done) {
+                    Box(Modifier.padding(top = 2.dp).clip(Pill).background(C.Card2).padding(horizontal = 10.dp, vertical = 3.dp)) {
+                        Text("отложена — в конце", color = C.Soft, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                    }
+                }
                 if (window != null && !done) {
                     Box(Modifier.padding(top = 2.dp).clip(Pill).background(Color(0xFF22150D)).padding(horizontal = 10.dp, vertical = 3.dp)) {
                         Text("приёмка $window", color = C.Warn, fontSize = 12.sp, fontWeight = FontWeight.Medium)
@@ -401,6 +333,13 @@ private fun VisitRow(
         }
         AnimatedVisibility(expanded) {
             Column(Modifier.fillMaxWidth().padding(start = 66.dp, end = 14.dp, bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (!current) OutlineButton("Начать с неё", onFirst, Modifier.weight(1f), height = 40.dp, icon = Ico.NAV)
+                    OutlineButton(
+                        if (later) "Вернуть" else "Отложить", { onPostpone(!later) },
+                        Modifier.weight(1f), height = 40.dp,
+                    )
+                }
                 v.stops.forEach { s ->
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
@@ -454,7 +393,7 @@ private fun ShimmerBar(fraction: Float) {
 }
 
 @Composable
-private fun DraftDialog(d: Draft, onSave: (Draft) -> Unit, onSkip: () -> Unit) {
+private fun DraftDialog(d: Draft, onSave: (Draft) -> Unit, onSkip: () -> Unit, onDelete: (Long) -> Unit) {
     var name by remember(d) { mutableStateOf(d.name) }
     var address by remember(d) { mutableStateOf(d.address) }
     var window by remember(d) { mutableStateOf(d.window ?: "") }
@@ -484,7 +423,10 @@ private fun DraftDialog(d: Draft, onSave: (Draft) -> Unit, onSkip: () -> Unit) {
                 { if (address.isNotBlank()) onSave(d.copy(name = name, address = address, window = window)) },
                 height = 54.dp, fontSize = 17.sp,
             )
-            OutlineButton(if (d.editId != null) "Отмена" else "Пропустить", onSkip, Modifier.fillMaxWidth())
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlineButton(if (d.editId != null) "Отмена" else "Пропустить", onSkip, Modifier.weight(1f))
+                d.editId?.let { id -> OutlineButton("Удалить", { onDelete(id) }, Modifier.weight(1f), color = C.Bad, icon = Ico.TRASH) }
+            }
         }
     }
 }

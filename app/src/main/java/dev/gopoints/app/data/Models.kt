@@ -15,7 +15,9 @@ data class Mark(
     val leftAt: Long? = null,
 )
 
-data class Shift(val start: Long, val end: Long? = null)
+data class Shift(val start: Long, val end: Long? = null, val distanceM: Double = 0.0) {
+    fun workedMs(now: Long = System.currentTimeMillis()) = ((end ?: now) - start).coerceAtLeast(0L)
+}
 
 /** Всё, что записано за один день. */
 data class DayLog(
@@ -27,8 +29,16 @@ data class DayLog(
     val isActive: Boolean get() = shifts.lastOrNull()?.end == null && shifts.isNotEmpty()
     val hasWork: Boolean get() = shifts.isNotEmpty()
 
-    fun workedMs(now: Long = System.currentTimeMillis()): Long =
-        shifts.sumOf { ((it.end ?: now) - it.start).coerceAtLeast(0L) }
+    fun workedMs(now: Long = System.currentTimeMillis()): Long = shifts.sumOf { it.workedMs(now) }
+
+    /** Пробег смены (у старых записей с одной сменой он хранился только на день). */
+    fun distOf(s: Shift): Double = if (shifts.size == 1 && s.distanceM == 0.0) distanceM else s.distanceM
+
+    /** Отметки, поставленные во время этой смены. */
+    fun marksIn(s: Shift): List<Mark> = marks.filter { it.time >= s.start && (s.end == null || it.time <= s.end) }
+
+    /** Время на точках за смену. */
+    fun onPointsMs(s: Shift, now: Long = System.currentTimeMillis()): Long = marksIn(s).sumOf { stayMs(it, now) ?: 0L }
 
     /** Время на точке для отметки; для текущей точки — до «сейчас». */
     fun stayMs(m: Mark, now: Long = System.currentTimeMillis()): Long? {
@@ -43,7 +53,9 @@ data class DayLog(
         .put("date", date)
         .put("distance", distanceM)
         .put("shifts", JSONArray().apply {
-            shifts.forEach { s -> put(JSONObject().put("start", s.start).apply { s.end?.let { put("end", it) } }) }
+            shifts.forEach { s ->
+                put(JSONObject().put("start", s.start).put("dist", s.distanceM).apply { s.end?.let { put("end", it) } })
+            }
         })
         .put("marks", JSONArray().apply {
             marks.forEach { m ->
@@ -69,7 +81,7 @@ data class DayLog(
                 distanceM = o.optDouble("distance", 0.0),
                 shifts = (0 until shifts.length()).map { i ->
                     val s = shifts.getJSONObject(i)
-                    Shift(s.getLong("start"), if (s.isNull("end")) null else s.getLong("end"))
+                    Shift(s.getLong("start"), if (s.isNull("end")) null else s.getLong("end"), s.optDouble("dist", 0.0))
                 },
                 marks = (0 until marks.length()).map { i ->
                     val m = marks.getJSONObject(i)

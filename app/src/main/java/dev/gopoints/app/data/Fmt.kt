@@ -48,18 +48,25 @@ fun dayTitle(date: java.time.LocalDate): String {
     return dayTitle(t)
 }
 
-/** Текст отчёта за день — для отправки в мессенджер. */
+/** Текст отчёта за день (по сменам, если их несколько) — для отправки в мессенджер. */
 fun dayReport(d: DayLog, now: Long = System.currentTimeMillis()): String = buildString {
     val date = java.time.LocalDate.parse(d.date)
     append("GoPoints · ").append(dayTitle(date)).append('\n')
-    if (d.shifts.isNotEmpty()) {
-        val start = d.shifts.first().start
-        val end = d.shifts.last().end
-        append("Смена ").append(clock(start)).append("–").append(end?.let { clock(it) } ?: "идёт")
-        append(" (").append(hm(d.workedMs(now))).append(")\n")
+    if (d.shifts.size > 1) {
+        append("Всего: ").append(hm(d.workedMs(now))).append(" · ").append(points(d.marks.size))
+        append(" · ").append(km(d.distanceM)).append('\n')
     }
-    append("Точек: ").append(d.marks.size).append(" · Пробег: ").append(km(d.distanceM)).append("\n\n")
-    d.marks.forEachIndexed { i, m ->
+    d.shifts.forEachIndexed { si, s -> append('\n').append(shiftReport(d, s, if (d.shifts.size > 1) si + 1 else null, now)) }
+    if (d.shifts.isEmpty()) append("Смен не было\n")
+}
+
+fun shiftReport(d: DayLog, s: Shift, number: Int?, now: Long = System.currentTimeMillis()): String = buildString {
+    append("Смена").append(number?.let { " $it" } ?: "").append(' ')
+    append(clock(s.start)).append("–").append(s.end?.let { clock(it) } ?: "идёт")
+    append(" (").append(hm(s.workedMs(now))).append(")\n")
+    val ms = d.marksIn(s)
+    append("Точек: ").append(ms.size).append(" · Пробег: ").append(km(d.distOf(s))).append('\n')
+    ms.forEachIndexed { i, m ->
         append(i + 1).append(". ").append(clock(m.time)).append(" — ")
         append(m.address ?: String.format(Locale.US, "%.5f, %.5f", m.lat, m.lon))
         d.stayMs(m, now)?.let { append(" (").append(mins(it)).append(")") }

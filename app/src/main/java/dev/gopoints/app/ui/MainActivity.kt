@@ -44,6 +44,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -52,12 +53,15 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import dev.gopoints.app.data.Events
 import dev.gopoints.app.data.Prefs
 import dev.gopoints.app.data.Store
+import dev.gopoints.app.route.RouteActions
+import kotlinx.coroutines.launch
 import dev.gopoints.app.tracking.TrackingService
 
 class MainActivity : ComponentActivity() {
@@ -160,27 +164,32 @@ private val tabs = listOf(
 fun AppRoot(onStart: () -> Unit, onVoiceNote: (Long) -> Unit, onAskNotifications: () -> Unit) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var settings by rememberSaveable { mutableStateOf(false) }
-    BackHandler(enabled = settings) { settings = false }
-    BackHandler(enabled = !settings && tab != 0) { tab = 0 }
+    var voice by rememberSaveable { mutableStateOf(false) }
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    BackHandler(enabled = settings || voice) { settings = false; voice = false }
+    BackHandler(enabled = !settings && !voice && tab != 0) { tab = 0 }
+    val overlay = settings || voice
 
     Box(Modifier.fillMaxSize().background(C.Bg)) {
-        AmbientGlow(x = if (tab % 2 == 0) 0.15f else 0.9f, y = if (tab >= 2) 0.35f else 0.04f)
+        AmbientGlow(x = if (voice) 0.5f else if (tab % 2 == 0) 0.15f else 0.9f, y = if (voice) 0.95f else if (tab >= 2) 0.35f else 0.04f)
         Box(Modifier.fillMaxSize().statusBarsPadding()) {
             AnimatedContent(
-                targetState = if (settings) -1 else tab,
+                targetState = when { voice -> -2; settings -> -1; else -> tab },
                 transitionSpec = { fadeIn(tween(220)) togetherWith fadeOut(tween(150)) },
                 label = "screens",
             ) { s ->
                 when (s) {
+                    -2 -> VoiceRoute(onClose = { voice = false }, onBuild = { scope.launch { RouteActions.build(ctx) } })
                     -1 -> SettingsScreen(onBack = { settings = false }, onAskNotifications = onAskNotifications)
                     0 -> TodayScreen(onSettings = { settings = true }, onStart = onStart, onVoiceNote = onVoiceNote)
-                    1 -> RouteScreen()
+                    1 -> RouteScreen(onVoice = { voice = true })
                     2 -> CalendarScreen()
                     else -> StatsScreen()
                 }
             }
         }
-        if (!settings) BottomBar(tab, { tab = it }, Modifier.align(Alignment.BottomCenter))
+        if (!overlay) BottomBar(tab, { tab = it }, Modifier.align(Alignment.BottomCenter))
         MarkFlash()
     }
 }

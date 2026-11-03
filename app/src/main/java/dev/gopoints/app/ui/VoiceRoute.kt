@@ -20,14 +20,11 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -51,19 +48,22 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
+import dev.gopoints.app.data.Prefs
 import dev.gopoints.app.route.Cmd
 import dev.gopoints.app.route.GeoState
 import dev.gopoints.app.route.Place
 import dev.gopoints.app.route.RouteStore
+import dev.gopoints.app.route.Spoken
 import dev.gopoints.app.route.Stop
 import dev.gopoints.app.route.VoiceIO
 import dev.gopoints.app.route.VoiceParse
@@ -72,11 +72,9 @@ private enum class Phase { IDLE, SPEAKING, LISTENING, THINKING }
 
 private data class Line(val mine: Boolean, val text: String, val options: List<String> = emptyList())
 
-private const val HELLO = "Называйте магазин и адрес. Например: Магнит, Зейская сто двадцать."
-
 /**
- * Голосовой ввод маршрута: разговор по кругу без касаний.
- * «Магнит, Зейская 120» → «Магнит, Зейская, 120. Добавить?» → «да» → «Добавлено, точка 1. Следующая?»
+ * Голосовой ввод маршрута — коротко, без лишних слов:
+ * «Белогорье, Заводская 11» → «Заводская улица, 11?» → «да» → сигнал → следующая.
  */
 @Composable
 fun VoiceRoute(onClose: () -> Unit, onBuild: () -> Unit) {
@@ -89,6 +87,7 @@ fun VoiceRoute(onClose: () -> Unit, onBuild: () -> Unit) {
     var level by remember { mutableFloatStateOf(0f) }
     var active by remember { mutableStateOf(false) }
     var runId by remember { mutableIntStateOf(0) }
+    var replies by remember { mutableStateOf(Prefs.voiceReplies) }
     var hasMic by remember {
         mutableStateOf(ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED)
     }
@@ -103,6 +102,7 @@ fun VoiceRoute(onClose: () -> Unit, onBuild: () -> Unit) {
         io.onLevel = { level = it }
         onDispose { io.release() }
     }
+    LaunchedEffect(replies) { io.speak = replies }
     LaunchedEffect(Unit) { if (hasMic && available) { active = true; runId++ } }
 
     fun close() {
@@ -110,7 +110,6 @@ fun VoiceRoute(onClose: () -> Unit, onBuild: () -> Unit) {
         onClose()
     }
 
-    // Сам разговор. Кнопка микрофона ставит на паузу (active = false — корутина отменяется) и продолжает.
     LaunchedEffect(runId, active) {
         if (!active || !hasMic || !available) {
             io.stopAll()
@@ -125,6 +124,7 @@ fun VoiceRoute(onClose: () -> Unit, onBuild: () -> Unit) {
             io.say(text)
         }
 
+        /** Слушаем; не расслышал — сигнал и ещё раз, молча. */
         suspend fun hear(): String? {
             repeat(2) { attempt ->
                 phase = Phase.LISTENING
@@ -135,20 +135,15 @@ fun VoiceRoute(onClose: () -> Unit, onBuild: () -> Unit) {
                     log += Line(true, r)
                     return r
                 }
-                if (attempt == 0) say("Не расслышал. Повторите.")
+                if (attempt == 0) io.beep(ok = false)
             }
             return null
-        }
-
-        suspend fun ask(text: String, options: List<String> = emptyList()): String? {
-            say(text, options)
-            return hear()
         }
 
         fun add(name: String, address: String, place: Place?) {
             val s = Stop(
                 id = System.currentTimeMillis(),
-                name = name.ifBlank { "Без названия" },
+                name = name.ifBlank { place?.address ?: address },
                 address = place?.address ?: address,
                 lat = place?.lat, lon = place?.lon,
                 geo = if (place != null) GeoState.OK else GeoState.MISSING,
@@ -157,70 +152,73 @@ fun VoiceRoute(onClose: () -> Unit, onBuild: () -> Unit) {
             added += s
         }
 
-        var prompt = if (added.isEmpty()) HELLO else "Следующая?"
+        var pending: String? = null
         while (true) {
-            val u = ask(prompt) ?: break
-            prompt = "Следующая?"
+            val u = pending ?: hear() ?: break
+            pending = null
+
             when (VoiceParse.command(u)) {
                 Cmd.DONE -> {
-                    if (added.isEmpty() && RouteStore.state.value.stops.isEmpty()) {
-                        say("Пока ни одной точки. Закрываю.")
-                    } else {
-                        say("Готово. Строю маршрут.")
+                    if (RouteStore.state.value.stops.isNotEmpty()) {
+                        say("Строю маршрут.")
                         onBuild()
                     }
                     close()
                     return@LaunchedEffect
                 }
                 Cmd.UNDO -> {
-                    val last = added.lastOrNull()
-                    if (last != null) {
-                        RouteStore.remove(last.id)
+                    added.lastOrNull()?.let {
+                        RouteStore.remove(it.id)
                         added.removeAt(added.lastIndex)
-                        say("Удалил: ${last.name}.")
-                    } else say("Удалять нечего.")
+                        say("Удалил.")
+                    }
                     continue
                 }
-                Cmd.REPEAT -> { prompt = log.lastOrNull { !it.mine }?.text ?: HELLO; continue }
                 Cmd.STOP -> { close(); return@LaunchedEffect }
                 else -> {}
             }
 
-            val spoken = VoiceParse.split(u)
+            var spoken = VoiceParse.split(u)
             if (spoken.house == null) {
-                prompt = "Не услышал номер дома. Скажите магазин, улицу и дом."
-                continue
+                say("Номер дома?")
+                val h = hear() ?: break
+                val num = VoiceParse.split(h).house
+                if (num == null) { io.beep(ok = false); continue }
+                spoken = Spoken(spoken.words, num)
             }
             phase = Phase.THINKING
             val (name, sayAddr, places) = VoiceParse.search(ctx, spoken)
-            val title = if (name.isNotBlank()) "$name, " else ""
 
             when {
                 places.isEmpty() -> {
-                    val a = ask("На карте не нашёл. Записать как сказано: $title$sayAddr?", listOf("Да", "Нет"))
-                    if (a != null && VoiceParse.yesNo(a) == Cmd.YES) {
-                        add(name, sayAddr, null)
-                        prompt = "Записал со слов, точка ${added.size}. Следующая?"
-                    } else prompt = "Не добавляю. Следующая?"
+                    say("Нет на карте. Записать?", listOf("Да", "Нет"))
+                    val a = hear() ?: break
+                    when {
+                        VoiceParse.yesNo(a) == Cmd.YES -> { add(name, sayAddr, null); io.beep(ok = true) }
+                        VoiceParse.split(a).house != null -> pending = a
+                        else -> io.beep(ok = false)
+                    }
                 }
                 places.size == 1 -> {
                     val p = places.first()
-                    val a = ask("$title${p.address}. Добавить?", listOf("Да", "Нет"))
-                    if (a != null && VoiceParse.yesNo(a) != Cmd.NO) {
-                        add(name, sayAddr, p)
-                        prompt = "Добавлено, точка ${added.size}. Следующая?"
-                    } else prompt = "Не добавляю. Следующая?"
+                    say("${p.address}?", listOf("Да", "Нет"))
+                    val a = hear() ?: break
+                    when {
+                        VoiceParse.yesNo(a) == Cmd.YES -> { add(name, sayAddr, p); io.beep(ok = true) }
+                        VoiceParse.yesNo(a) == Cmd.NO -> io.beep(ok = false)
+                        VoiceParse.split(a).house != null -> pending = a
+                        else -> { add(name, sayAddr, p); io.beep(ok = true) }
+                    }
                 }
                 else -> {
                     val opts = places.take(3)
-                    val ordinals = listOf("первый", "второй", "третий")
-                    val text = "Нашёл ${opts.size}: " + opts.mapIndexed { i, p -> "${ordinals[i]} — ${p.address}" }.joinToString(", ") + ". Какой?"
-                    val a = ask(text, opts.mapIndexed { i, p -> "${i + 1} · ${p.address}" })
-                    val i = a?.let { VoiceParse.choice(it) }
-                    if (i != null && i < opts.size) {
-                        add(name, sayAddr, opts[i])
-                        prompt = "Добавлено, точка ${added.size}. Следующая?"
-                    } else prompt = "Не понял, какой. Не добавляю. Следующая?"
+                    say(opts.joinToString(" или ") { it.address } + "?", opts.mapIndexed { i, p -> "${i + 1} · ${p.address}" })
+                    val a = hear() ?: break
+                    val digits = Regex("\\d+").findAll(a).map { it.value }.toList()
+                    val byHouse = opts.indexOfFirst { p -> digits.any { d -> p.address.endsWith(" $d") || p.address.endsWith(",$d") } }
+                    val i = VoiceParse.choice(a) ?: byHouse.takeIf { it >= 0 }
+                    if (i != null && i < opts.size) { add(name, sayAddr, opts[i]); io.beep(ok = true) }
+                    else io.beep(ok = false)
                 }
             }
         }
@@ -228,69 +226,70 @@ fun VoiceRoute(onClose: () -> Unit, onBuild: () -> Unit) {
         active = false
     }
 
-    Dialog(onDismissRequest = ::close, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
-        Box(Modifier.fillMaxSize().background(C.Bg)) {
-            AmbientGlow(x = 0.5f, y = 0.95f)
-            Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
-                // шапка
-                Column(Modifier.padding(start = 18.dp, end = 18.dp, top = 10.dp)) {
-                    Row(
-                        Modifier.clickable(onClick = ::close).padding(vertical = 8.dp, horizontal = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        GIcon(Ico.BACK, C.Acc, size = 18.dp, stroke = 2.2f)
-                        Text("Маршрут", color = C.Acc, fontSize = 16.sp)
-                    }
-                    Text("Голосом", color = C.Ink, fontSize = 34.sp, fontWeight = FontWeight.Bold)
-                }
-
-                if (added.isNotEmpty()) {
-                    Row(
-                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        added.forEachIndexed { i, s ->
-                            Box(Modifier.clip(RoundedCornerShape(12.dp)).background(C.Card2).padding(horizontal = 12.dp, vertical = 8.dp)) {
-                                Text("${i + 1} · ${s.name}", color = C.Ink, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                            }
-                        }
-                    }
-                }
-
-                // диалог
-                val listState = rememberLazyListState()
-                LaunchedEffect(log.size) { if (log.isNotEmpty()) listState.animateScrollToItem(log.size - 1) }
-                LazyColumn(
-                    Modifier.weight(1f).fillMaxWidth().padding(horizontal = 18.dp),
-                    state = listState,
-                    verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.Bottom),
+    Column(Modifier.fillMaxSize().navigationBarsPadding()) {
+        // шапка
+        Column(Modifier.padding(start = 18.dp, end = 18.dp, top = 10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    Modifier.clickable(onClick = ::close).padding(vertical = 8.dp, horizontal = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    items(log) { line -> Bubble(line, onOption = { io.inject(it) }) }
-                    if (partial.isNotBlank()) item { Bubble(Line(true, "$partial…"), onOption = {}) }
+                    GIcon(Ico.BACK, C.Acc, size = 18.dp, stroke = 2.2f)
+                    Text("Маршрут", color = C.Acc, fontSize = 16.sp)
                 }
+                androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
+                Chip(if (replies) "Голос: вкл" else "Голос: выкл", replies) {
+                    replies = !replies
+                    Prefs.voiceReplies = replies
+                    if (!replies) io.stopAll()
+                }
+            }
+            Text("Голосом", color = C.Ink, fontSize = 34.sp, fontWeight = FontWeight.Bold)
+            Text("Скажите: «Белогорье, Заводская 11» — потом «да»", color = C.Muted, fontSize = 14.sp)
+        }
 
-                // низ: команды и микрофон
-                Column(
-                    Modifier.fillMaxWidth().background(Color(0xCC0A0A0C)).padding(start = 18.dp, end = 18.dp, top = 12.dp, bottom = 20.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp),
-                ) {
-                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        CommandChip("«Да» / «Нет»") { io.inject("да") }
-                        CommandChip("«Удали последнюю»") { io.inject("удали последнюю") }
-                        CommandChip("«Готово»", strong = true) { io.inject("готово") }
-                    }
-                    when {
-                        !available -> Text(
-                            "На телефоне нет распознавания речи. Установите или обновите приложение Google.",
-                            color = C.Warn, fontSize = 14.sp,
-                        )
-                        !hasMic -> GlowButton("Разрешить микрофон", { askMic.launch(Manifest.permission.RECORD_AUDIO) }, height = 64.dp, icon = Ico.MIC)
-                        else -> MicButton(phase, level) {
-                            if (active) active = false else { active = true; runId++ }
-                        }
+        if (added.isNotEmpty()) {
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                added.forEachIndexed { i, s ->
+                    Box(Modifier.clip(RoundedCornerShape(12.dp)).background(C.Card2).padding(horizontal = 12.dp, vertical = 8.dp)) {
+                        Text("${i + 1} · ${s.name}", color = C.Ink, fontSize = 14.sp, fontWeight = FontWeight.Medium)
                     }
                 }
+            }
+        }
+
+        // диалог — занимает всё свободное место, низ всегда на экране
+        val listState = rememberLazyListState()
+        val rows = log.size + if (partial.isNotBlank()) 1 else 0
+        LaunchedEffect(rows) { if (rows > 0) listState.animateScrollToItem(rows - 1) }
+        LazyColumn(
+            Modifier.weight(1f).fillMaxWidth().padding(horizontal = 18.dp),
+            state = listState,
+            verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.Bottom),
+        ) {
+            items(log) { line -> Bubble(line, onOption = { io.inject(it) }) }
+            if (partial.isNotBlank()) item { Bubble(Line(true, "$partial…"), onOption = {}) }
+        }
+
+        Column(
+            Modifier.fillMaxWidth().padding(start = 18.dp, end = 18.dp, top = 12.dp, bottom = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                CommandChip("«Удали последнюю»") { io.inject("удали последнюю") }
+                CommandChip("«Готово» — построить", strong = true) { io.inject("готово") }
+            }
+            when {
+                !available -> Text(
+                    "На телефоне нет распознавания речи. Установите или обновите приложение Google.",
+                    color = C.Warn, fontSize = 14.sp,
+                )
+                !hasMic -> GlowButton("Разрешить микрофон", { askMic.launch(Manifest.permission.RECORD_AUDIO) }, height = 64.dp, icon = Ico.MIC)
+                else -> MicButton(phase, level) { if (active) active = false else { active = true; runId++ } }
             }
         }
     }
@@ -306,17 +305,20 @@ private fun Bubble(line: Line, onOption: (String) -> Unit) {
                 .padding(horizontal = 14.dp, vertical = 10.dp)
         ) { Text(line.text, color = if (line.mine) C.Ink else C.Soft, fontSize = 16.sp) }
         if (line.options.isNotEmpty()) {
-            Column(Modifier.padding(top = 6.dp).widthIn(max = 300.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                line.options.forEachIndexed { i, o ->
-                    OutlineButton(o, {
-                        onOption(
-                            when (o) {
-                                "Да" -> "да"
-                                "Нет" -> "нет"
-                                else -> listOf("первый", "второй", "третий").getOrElse(i) { "первый" }
-                            }
-                        )
-                    }, Modifier.fillMaxWidth(), height = 44.dp)
+            val answers = line.options.mapIndexed { i, o ->
+                when (o) {
+                    "Да" -> "да"
+                    "Нет" -> "нет"
+                    else -> listOf("первый", "второй", "третий").getOrElse(i) { "первый" }
+                }
+            }
+            if (line.options.all { it.length <= 3 }) {
+                Row(Modifier.padding(top = 6.dp).widthIn(max = 260.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    line.options.forEachIndexed { i, o -> OutlineButton(o, { onOption(answers[i]) }, Modifier.weight(1f), height = 44.dp) }
+                }
+            } else {
+                Column(Modifier.padding(top = 6.dp).widthIn(max = 300.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    line.options.forEachIndexed { i, o -> OutlineButton(o, { onOption(answers[i]) }, Modifier.fillMaxWidth(), height = 44.dp) }
                 }
             }
         }
@@ -331,7 +333,7 @@ private fun CommandChip(text: String, strong: Boolean = false, onClick: () -> Un
     ) { Text(text, color = if (strong) Color.Black else C.Ink, fontSize = 14.sp, fontWeight = FontWeight.Medium) }
 }
 
-/** Большая кнопка микрофона: кольца расходятся, пока слушаем; полоски прыгают от громкости голоса. */
+/** Кнопка микрофона: кольца расходятся, пока слушаем; полоски прыгают от громкости голоса. */
 @Composable
 private fun MicButton(phase: Phase, level: Float, onClick: () -> Unit) {
     val t = rememberInfiniteTransition(label = "mic")
@@ -341,22 +343,21 @@ private fun MicButton(phase: Phase, level: Float, onClick: () -> Unit) {
     val listening = phase == Phase.LISTENING
     val label = when (phase) {
         Phase.IDLE -> "Нажмите и говорите"
-        Phase.SPEAKING -> "Говорю…"
-        Phase.LISTENING -> "Слушаю…"
+        Phase.SPEAKING -> "…"
+        Phase.LISTENING -> "Слушаю"
         Phase.THINKING -> "Ищу на карте…"
     }
     Box(Modifier.fillMaxWidth().height(68.dp)) {
         if (listening) {
             Canvas(Modifier.fillMaxSize()) {
                 listOf(ring, (ring + 0.5f) % 1f).forEach { p ->
-                    val grow = 1f + p * 0.35f
-                    val w = size.width * (1f + (grow - 1f) * 0.15f)
-                    val h = size.height * grow
+                    val w = size.width * (1f + p * 0.05f)
+                    val h = size.height * (1f + p * 0.35f)
                     drawRoundRect(
                         C.Acc.copy(alpha = 0.6f * (1f - p)),
-                        topLeft = androidx.compose.ui.geometry.Offset((size.width - w) / 2f, (size.height - h) / 2f),
-                        size = androidx.compose.ui.geometry.Size(w, h),
-                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(h / 2f),
+                        topLeft = Offset((size.width - w) / 2f, (size.height - h) / 2f),
+                        size = Size(w, h),
+                        cornerRadius = CornerRadius(h / 2f),
                         style = Stroke(2.dp.toPx()),
                     )
                 }
@@ -374,11 +375,11 @@ private fun MicButton(phase: Phase, level: Float, onClick: () -> Unit) {
                 if (listening) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
                         listOf(0.5f, 0.9f, 1f, 0.7f, 0.85f).forEachIndexed { i, k ->
-                            val phaseK = if (i % 2 == 0) wave else 1f - wave
-                            Box(Modifier.width(3.dp).height((6 + 16 * lv * k * (0.5f + 0.5f * phaseK)).dp).clip(CircleShape).background(C.OnAcc))
+                            val pk = if (i % 2 == 0) wave else 1f - wave
+                            Box(Modifier.width(3.dp).height((6 + 16 * lv * k * (0.5f + 0.5f * pk)).dp).clip(CircleShape).background(C.OnAcc))
                         }
                     }
-                } else Spacer(Modifier.size(0.dp))
+                }
             }
         }
     }

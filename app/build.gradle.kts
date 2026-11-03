@@ -16,9 +16,7 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = buildNumber
-        versionName = "0.2.$buildNumber"
-        // Распознавание текста — нативная библиотека; оставляем только архитектуры реальных телефонов.
-        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
+        versionName = "0.3.$buildNumber"
     }
 
     // Один постоянный ключ в репозитории: APK из любой сборки обновляет приложение без удаления данных.
@@ -51,9 +49,6 @@ android {
     buildFeatures {
         compose = true
     }
-    androidResources {
-        noCompress += "traineddata"
-    }
 }
 
 dependencies {
@@ -69,6 +64,4 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("com.google.android.gms:play-services-location:21.3.0")
-    implementation("androidx.exifinterface:exifinterface:1.3.7")
-    implementation("cz.adaptech.tesseract4android:tesseract4android:4.9.0")
 }

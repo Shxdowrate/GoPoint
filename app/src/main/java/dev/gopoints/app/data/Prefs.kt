@@ -20,6 +20,11 @@ object Prefs {
         get() = sp.getBoolean("auto", true)
         set(v) = sp.edit().putBoolean("auto", v).apply()
 
+    /** Голосовой ввод отвечает вслух (иначе — только текст и сигналы). */
+    var voiceReplies: Boolean
+        get() = sp.getBoolean("voice_replies", true)
+        set(v) = sp.edit().putBoolean("voice_replies", v).apply()
+
     /** Через сколько минут стоянки спрашивать. */
     var autoMarkMin: Int
         get() = sp.getInt("auto_min", 5)
