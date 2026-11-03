@@ -120,6 +120,7 @@ fun RouteScreen() {
     var start by remember { mutableStateOf<Pair<Double, Double>?>(null) }
     var expanded by remember { mutableStateOf<Int?>(null) }
     var confirmClear by remember { mutableStateOf(false) }
+    var voice by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(Unit) { start = lastLocation(ctx) }
     LaunchedEffect(confirmClear) { if (confirmClear) { delay(3000); confirmClear = false } }
 
@@ -247,12 +248,18 @@ fun RouteScreen() {
                         !st.optimized -> GlowButton("Построить маршрут", ::build, height = 60.dp, icon = Ico.ROUTE, fontSize = 17.sp)
                         else -> GlowButton("Открыть в Навигаторе", { Planner.openNavigator(ctx, ahead) }, height = 60.dp, icon = Ico.NAV, fontSize = 17.sp)
                     }
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (st.stops.isNotEmpty()) OutlineButton("Фото", ::shoot, Modifier.weight(1f), icon = Ico.CAMERA)
-                        OutlineButton("Галерея", {
+                    val extra = buildList<Triple<String, Ico, () -> Unit>> {
+                        if (st.stops.isNotEmpty()) add(Triple("Фото", Ico.CAMERA, ::shoot))
+                        add(Triple("Голосом", Ico.MIC) { voice = true })
+                        add(Triple("Галерея", Ico.IMAGE) {
                             gallery.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                        }, Modifier.weight(1f), icon = Ico.IMAGE)
-                        OutlineButton("Вручную", { drafts += Draft("", "", null, null, complete = true) }, Modifier.weight(1f), icon = Ico.EDIT)
+                        })
+                        add(Triple("Вручную", Ico.EDIT) { drafts += Draft("", "", null, null, complete = true) })
+                    }
+                    extra.chunked(2).forEach { row ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            row.forEach { (label, ico, action) -> OutlineButton(label, action, Modifier.weight(1f), icon = ico) }
+                        }
                     }
                     if (st.optimized && st.stops.isNotEmpty()) {
                         Text(
@@ -333,6 +340,8 @@ fun RouteScreen() {
             item { Fine("Точка считается сделанной, когда рядом с ней стоит отметка за сегодня.", Modifier.rise(260)) }
         }
     }
+
+    if (voice) VoiceRoute(onClose = { voice = false }, onBuild = ::build)
 
     drafts.firstOrNull()?.let { d ->
         DraftDialog(
