@@ -3,11 +3,7 @@ package dev.gopoints.app.route
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
-import android.location.Geocoder
 import android.net.Uri
-import dev.gopoints.app.data.RU
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import java.time.LocalTime
 import java.util.Locale
 import kotlin.math.asin
@@ -23,8 +19,9 @@ data class Visit(val lat: Double, val lon: Double, val stops: List<Stop>) {
 data class Plan(val visits: List<Visit>, val km: Double, val minutes: Int, val lateStops: Int)
 
 object Planner {
-    /** Средняя скорость грузовика по городу и время на разгрузку одной накладной. */
+    /** Средняя скорость грузовика: по городу и по трассе (перегон длиннее 8 км), и время на разгрузку. */
     private const val SPEED_KMH = 25.0
+    private const val HIGHWAY_KMH = 60.0
     private const val UNLOAD_MIN = 15
     /** Дороги длиннее прямой примерно в 1,3 раза. */
     private const val ROAD_FACTOR = 1.3
@@ -60,7 +57,7 @@ object Planner {
         for (v in order) {
             val d = if (pLat != null && pLon != null) km(pLat, pLon, v.lat, v.lon) else 0.0
             total += d
-            t += d / SPEED_KMH * 60
+            t += d / (if (d > 8.0) HIGHWAY_KMH else SPEED_KMH) * 60
             v.windowMin?.let { w -> if (t > w) { lateMin += t - w; late += v.stops.size } }
             t += UNLOAD_MIN * v.stops.size
             pLat = v.lat
@@ -151,18 +148,9 @@ object Planner {
     fun ordered(plan: Plan, all: List<Stop>): List<Stop> =
         plan.visits.flatMap { it.stops } + all.filter { !it.hasCoords }
 
-    /** Координаты по адресу, в пределах Благовещенска и окрестностей. */
-    suspend fun geocode(ctx: Context, address: String): Pair<Double, Double>? = withContext(Dispatchers.IO) {
-        try {
-            if (!Geocoder.isPresent()) return@withContext null
-            val q = if (address.contains("Благовещенск", true)) address else "Благовещенск, $address"
-            @Suppress("DEPRECATION")
-            val list = Geocoder(ctx, RU).getFromLocationName(q, 1, 50.15, 127.25, 50.55, 127.85)
-            list?.firstOrNull()?.let { it.latitude to it.longitude }
-        } catch (e: Exception) {
-            null
-        }
-    }
+    /** Координаты по адресу — в Благовещенске или в названном пункте области. */
+    suspend fun geocode(ctx: Context, address: String): Pair<Double, Double>? =
+        GeoSearch.locate(ctx, address)?.let { it.lat to it.lon }
 
     /** Отдаём маршрут в Яндекс Навигатор; если его нет — в Яндекс Карты. */
     fun openNavigator(ctx: Context, visits: List<Visit>) {

@@ -246,7 +246,7 @@ fun VoiceRoute(onClose: () -> Unit, onBuild: () -> Unit) {
                 }
             }
             Text("Голосом", color = C.Ink, fontSize = 34.sp, fontWeight = FontWeight.Bold)
-            Text("Скажите: «Белогорье, Заводская 11» — потом «да»", color = C.Muted, fontSize = 14.sp)
+            Text("«Колосок, Ленина 145» или «Марково, Центральная 5» — потом «да»", color = C.Muted, fontSize = 14.sp)
         }
 
         if (added.isNotEmpty()) {

@@ -143,7 +143,7 @@ fun RouteScreen(onVoice: () -> Unit) {
                     if (st.stops.isEmpty()) {
                         Text("Продиктуйте точки", color = C.Ink, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
                         Text(
-                            "«Белогорье, Заводская 11» — «да» — следующая. GoPoints найдёт адреса на карте и построит порядок объезда.",
+                            "«Колосок, Ленина 145» — «да» — следующая. Сёла и города области тоже: «Марково, Центральная 5». GoPoints найдёт адреса и построит порядок объезда.",
                             color = C.Muted, fontSize = 14.sp,
                         )
                     } else {
@@ -416,7 +416,7 @@ private fun DraftDialog(d: Draft, onSave: (Draft) -> Unit, onSkip: () -> Unit, o
             )
             if (!d.complete) Text("Распознано не всё — проверьте и допишите", color = C.Warn, fontSize = 14.sp)
             Field("Грузополучатель", name) { name = it }
-            Field("Адрес доставки", address, hint = "ул. Зейская, 120") { address = it }
+            Field("Адрес доставки", address, hint = "Зейская, 120 или Марково, Центральная, 5") { address = it }
             Field("Время приёмки", window, hint = "до 14:00") { window = it }
             GlowButton(
                 if (d.editId != null) "Сохранить" else "Добавить в маршрут",

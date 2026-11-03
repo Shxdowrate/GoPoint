@@ -1,10 +1,7 @@
 package dev.gopoints.app.route
 
 import android.content.Context
-import android.location.Geocoder
 import dev.gopoints.app.data.RU
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 
 /** Найденный на карте вариант адреса. */
 data class Place(val address: String, val lat: Double, val lon: Double)
@@ -77,39 +74,29 @@ object VoiceParse {
     private fun cap(s: String) = s.split(" ").joinToString(" ") { w -> w.replaceFirstChar { it.titlecase(RU) } }
 
     /**
-     * Перебираем, сколько последних слов — улица (1–3), остальное — название магазина.
-     * Подходит вариант, где геокодер вернул улицу с тем же корнем и номер дома.
+     * Сначала выделяем населённый пункт («Белогорье», «в Марково», «Верхблаговещенск»), по умолчанию Благовещенск.
+     * Потом перебираем, сколько последних слов — улица (1–3), остальное — название магазина.
+     * Подходит вариант, где геокодер вернул улицу с тем же корнем.
      */
-    suspend fun search(ctx: Context, s: Spoken): Triple<String, String, List<Place>> = withContext(Dispatchers.IO) {
-        val house = s.house ?: return@withContext Triple(cap(s.words.joinToString(" ")), "", emptyList<Place>())
-        val words = s.words
+    suspend fun search(ctx: Context, s: Spoken): Triple<String, String, List<Place>> {
+        val found = Localities.find(s.words)
+        val loc = found?.first ?: Localities.CITY
+        val words = s.words.filterIndexed { i, _ -> found == null || i !in found.second }
+        val town = if (loc.isCity) "" else "${loc.name}, "
+        val house = s.house ?: return Triple(cap(words.joinToString(" ")), town.trimEnd(',', ' '), emptyList())
         for (k in 1..minOf(3, words.size)) {
             val streetWords = words.takeLast(k).filter { it.lowercase(RU) !in FILLERS }
             if (streetWords.isEmpty()) continue
             val nameWords = words.dropLast(k).filter { it.lowercase(RU) !in FILLERS }
-            val name = cap(nameWords.joinToString(" "))
-            val stem = streetWords.maxBy { it.length }.lowercase(RU).take(4)
-            val places = geocodeAll(ctx, "Благовещенск, ${streetWords.joinToString(" ")} $house")
-                .filter { it.address.lowercase(RU).contains(stem) }
-            if (places.isNotEmpty()) return@withContext Triple(name, "${cap(streetWords.joinToString(" "))}, $house", places)
+            val stem = streetWords.maxBy { it.length }.lowercase(RU).replace('ё', 'е').take(4)
+            val places = GeoSearch.find(ctx, loc, "${streetWords.joinToString(" ")} $house")
+                .filter { Localities.norm(it.address).contains(stem) }
+            if (places.isNotEmpty()) {
+                return Triple(cap(nameWords.joinToString(" ")), "$town${cap(streetWords.joinToString(" "))}, $house", places)
+            }
         }
         val name = cap(words.dropLast(1).filter { it.lowercase(RU) !in FILLERS }.joinToString(" "))
         val street = words.lastOrNull()?.let { cap(it) } ?: ""
-        Triple(name, "$street, $house", emptyList())
-    }
-
-    private fun geocodeAll(ctx: Context, q: String): List<Place> = try {
-        if (!Geocoder.isPresent()) emptyList()
-        else {
-            @Suppress("DEPRECATION")
-            val list = Geocoder(ctx, RU).getFromLocationName(q, 5, 50.15, 127.25, 50.55, 127.85) ?: emptyList()
-            list.mapNotNull { a ->
-                val st = a.thoroughfare ?: return@mapNotNull null
-                val h = a.subThoroughfare ?: return@mapNotNull null
-                Place("$st, $h", a.latitude, a.longitude)
-            }.distinctBy { it.address }
-        }
-    } catch (e: Exception) {
-        emptyList()
+        return Triple(name, "$town$street, $house", emptyList())
     }
 }
