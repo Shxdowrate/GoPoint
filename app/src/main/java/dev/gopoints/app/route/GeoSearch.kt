@@ -22,16 +22,32 @@ object GeoSearch {
 
     private fun mentions(a: Address, l: Locality): Boolean = l in places(a)
 
+    private fun km(aLat: Double, aLon: Double, bLat: Double, bLon: Double): Double {
+        val r = FloatArray(1)
+        android.location.Location.distanceBetween(aLat, aLon, bLat, bLon, r)
+        return r[0] / 1000.0
+    }
+
+    /** В каком посёлке лежит точка (по кругу посёлка). */
+    private fun districtAt(lat: Double, lon: Double): Locality? = Localities.ALL.firstOrNull { l ->
+        l.area?.let { (cLat, cLon, r) -> km(lat, lon, cLat, cLon) <= r } == true
+    }
+
+    private fun inArea(a: Address, l: Locality): Boolean =
+        l.area?.let { (cLat, cLon, r) -> km(a.latitude, a.longitude, cLat, cLon) <= r } ?: mentions(a, l)
+
     private fun belongs(a: Address, l: Locality): Boolean =
-        if (l.isCity) inBlag(a) && places(a).none { it.inCity } else mentions(a, l)
+        if (l.isCity) inBlag(a) else mentions(a, l)
 
     @Suppress("DEPRECATION")
     private fun geocode(ctx: Context, q: String, box: DoubleArray): List<Address> =
         Geocoder(ctx, RU).getFromLocationName(q, 5, box[0], box[1], box[2], box[3]) ?: emptyList()
 
+    /** Подпись адреса; в городе — с названием посёлка, если точка в нём (видно, какая из одноимённых улиц). */
     private fun label(l: Locality, a: Address): Place {
         val house = a.subThoroughfare?.let { ", $it" } ?: ""
-        return Place((if (l.isCity) "" else "${l.name}, ") + a.thoroughfare + house, a.latitude, a.longitude)
+        val town = if (l.isCity) districtAt(a.latitude, a.longitude)?.name else l.name
+        return Place((town?.let { "$it, " } ?: "") + a.thoroughfare + house, a.latitude, a.longitude)
     }
 
     /**
@@ -48,10 +64,12 @@ object GeoSearch {
                 l.isCity -> geocode(ctx, "Благовещенск, $street", CITY_BOX)
                     .filter { it.thoroughfare != null && belongs(it, l) }.map { label(l, it) }
                 l.inCity -> {
+                    // Только адреса внутри посёлка: одноимённая улица в городе не подойдёт.
                     val raw = geocode(ctx, "Благовещенск, ${l.name}, $street", CITY_BOX).filter { it.thoroughfare != null } +
-                        geocode(ctx, "Благовещенск, $street", CITY_BOX).filter { it.thoroughfare != null }
-                    val named = raw.filter { mentions(it, l) }
-                    (named.ifEmpty { raw.filter { inBlag(it) } }).map { label(l, it) }
+                        geocode(ctx, "Амурская область, ${l.name}, $street", CITY_BOX).filter { it.thoroughfare != null }
+                    raw.filter { inArea(it, l) }.sortedByDescending { mentions(it, l) }.map { label(l, it) }.ifEmpty {
+                        l.area?.let { (cLat, cLon, _) -> listOf(Place("${l.name}, ${street.trim()} (≈ центр посёлка)", cLat, cLon)) } ?: emptyList()
+                    }
                 }
                 else -> {
                     val region = geocode(ctx, "Амурская область, ${l.name}, $street", REGION_BOX)
