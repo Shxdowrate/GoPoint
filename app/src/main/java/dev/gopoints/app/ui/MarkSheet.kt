@@ -3,6 +3,8 @@ package dev.gopoints.app.ui
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
 import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -47,7 +49,6 @@ import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.CustomZoomButtonsController
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Marker
-import org.osmdroid.views.overlay.TilesOverlay
 import java.io.File
 import java.util.Locale
 
@@ -68,6 +69,18 @@ private fun openInMaps(ctx: Context, m: Mark) {
     }
 }
 
+/** Инверсия цветов тайлов + чуть приглушить — тёмная карта под тему приложения. */
+private val DARK_TILES = ColorMatrixColorFilter(
+    ColorMatrix(
+        floatArrayOf(
+            -0.85f, 0f, 0f, 0f, 235f,
+            0f, -0.85f, 0f, 0f, 235f,
+            0f, 0f, -0.8f, 0f, 230f,
+            0f, 0f, 0f, 1f, 0f,
+        )
+    )
+)
+
 /** Тёмная карта OpenStreetMap с меткой. */
 @Composable
 fun PointMap(lat: Double, lon: Double, modifier: Modifier = Modifier) {
@@ -82,7 +95,7 @@ fun PointMap(lat: Double, lon: Double, modifier: Modifier = Modifier) {
                 setTileSource(TileSourceFactory.MAPNIK)
                 setMultiTouchControls(true)
                 zoomController.setVisibility(CustomZoomButtonsController.Visibility.NEVER)
-                overlayManager.tilesOverlay.setColorFilter(TilesOverlay.INVERTED_COLORS)
+                overlayManager.tilesOverlay.setColorFilter(DARK_TILES)
                 controller.setZoom(17.0)
                 controller.setCenter(GeoPoint(lat, lon))
                 val mk = Marker(this)
