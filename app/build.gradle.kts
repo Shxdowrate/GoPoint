@@ -16,7 +16,7 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = buildNumber
-        versionName = "0.4.$buildNumber"
+        versionName = "0.5.$buildNumber"
     }
 
     // Один постоянный ключ в репозитории: APK из любой сборки обновляет приложение без удаления данных.

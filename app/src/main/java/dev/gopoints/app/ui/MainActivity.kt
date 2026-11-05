@@ -167,7 +167,8 @@ fun AppRoot(onStart: () -> Unit, onVoiceNote: (Long) -> Unit, onAskNotifications
     var voice by rememberSaveable { mutableStateOf(false) }
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
-    BackHandler(enabled = settings || voice) { settings = false; voice = false }
+    BackHandler(enabled = MapOverlay.request != null) { MapOverlay.request = null }
+    BackHandler(enabled = MapOverlay.request == null && (settings || voice)) { settings = false; voice = false }
     BackHandler(enabled = !settings && !voice && tab != 0) { tab = 0 }
     val overlay = settings || voice
 
@@ -190,6 +191,7 @@ fun AppRoot(onStart: () -> Unit, onVoiceNote: (Long) -> Unit, onAskNotifications
             }
         }
         if (!overlay) BottomBar(tab, { tab = it }, Modifier.align(Alignment.BottomCenter))
+        MapOverlay.request?.let { r -> FullMapScreen(r, onClose = { MapOverlay.request = null }) }
         MarkFlash()
     }
 }

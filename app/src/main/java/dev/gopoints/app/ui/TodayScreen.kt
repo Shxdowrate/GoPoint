@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
@@ -28,6 +29,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -37,6 +39,8 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.gopoints.app.data.DayLog
 import dev.gopoints.app.data.Mark
+import dev.gopoints.app.data.Shift
+import dev.gopoints.app.data.shiftReport
 import dev.gopoints.app.data.Store
 import dev.gopoints.app.data.clock
 import dev.gopoints.app.data.dayReport
@@ -80,6 +84,9 @@ fun TodayScreen(onSettings: () -> Unit, onStart: () -> Unit, onVoiceNote: (Long)
     ) {
         item { Header(now, onSettings) }
         item { StatusCard(day, now, onStart, onVoiceNote) }
+        if (shift != null) {
+            item { ShiftMapCard(day, shift, shiftMarks, if (day.shifts.size > 1) day.shifts.size else null) }
+        }
         item {
             Fine("Ещё способы: громкость вниз ×2, Bluetooth-кнопка, автоотметка после стоянки", Modifier.rise(140))
         }
@@ -133,6 +140,8 @@ fun TodayScreen(onSettings: () -> Unit, onStart: () -> Unit, onVoiceNote: (Long)
                             }
                             AnimatedVisibility(openShift == i) {
                                 Column {
+                                    OutlineButton("Карта смены", { MapOverlay.request = shiftMapRequest(day, sh, i + 1) },
+                                        Modifier.fillMaxWidth().padding(start = 66.dp, end = 14.dp, bottom = 10.dp), height = 40.dp, icon = Ico.ROUTE)
                                     ms.reversed().forEach { m ->
                                         Divider(start = 66.dp)
                                         MarkRow(day, m, now, delayMs = 0) { sheet = m.id }
@@ -167,6 +176,43 @@ private fun Header(now: Long, onSettings: () -> Unit) {
             }
         }
         RoundIconButton(Ico.SLIDERS, onSettings)
+    }
+}
+
+fun shiftMapRequest(day: DayLog, sh: Shift, number: Int?): MapRequest = MapRequest(
+    title = "Смена" + (number?.let { " $it" } ?: "") + " · " + clock(sh.start) + "–" + (sh.end?.let { clock(it) } ?: "сейчас"),
+    sub = "${points(day.marksIn(sh).size)} · ${km(day.distOf(sh))} · ${hm(sh.workedMs())}",
+    date = day.date, from = sh.start, to = sh.end,
+    marks = day.marksIn(sh),
+    report = "GoPoints · " + dayTitle(java.time.LocalDate.parse(day.date)) + "\n" + shiftReport(day, sh, number),
+)
+
+/** Превью карты смены: путь и отметки. Нажатие — на весь экран. */
+@Composable
+private fun ShiftMapCard(day: DayLog, sh: Shift, marks: List<Mark>, number: Int?) {
+    val track = rememberTrack(day.date, sh.start, sh.end)
+    GCard(Modifier.rise(110)) {
+        Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Карта смены", Modifier.weight(1f), color = C.Ink, fontSize = 16.sp, fontWeight = FontWeight.Medium)
+            Text("${km(day.distOf(sh))} · на весь экран", color = C.Muted, fontSize = 13.sp)
+        }
+        Box(
+            Modifier.fillMaxWidth().height(190.dp)
+                .clickable { MapOverlay.request = shiftMapRequest(day, sh, number) }
+        ) {
+            TrackMap(track, marks, Modifier.fillMaxSize())
+            Box(
+                Modifier.fillMaxSize().clickable { MapOverlay.request = shiftMapRequest(day, sh, number) }
+            )
+            if (track.size < 2) {
+                Text(
+                    if (day.isActive) "Путь появится, когда поедете" else "Для этой смены трек не записан",
+                    Modifier.align(Alignment.BottomStart).padding(12.dp)
+                        .clip(Pill).background(Color(0xCC000000)).padding(horizontal = 12.dp, vertical = 6.dp),
+                    color = C.Soft, fontSize = 13.sp,
+                )
+            }
+        }
     }
 }
 

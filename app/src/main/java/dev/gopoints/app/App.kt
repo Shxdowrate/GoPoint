@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import dev.gopoints.app.data.Prefs
 import dev.gopoints.app.data.Store
+import dev.gopoints.app.data.Track
 import dev.gopoints.app.route.RouteStore
 
 class App : Application() {
@@ -12,6 +13,7 @@ class App : Application() {
         super.onCreate()
         Prefs.init(this)
         Store.init(this)
+        Track.init(this)
         RouteStore.init(this)
         createChannels()
     }

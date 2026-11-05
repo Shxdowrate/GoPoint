@@ -157,7 +157,17 @@ fun CalendarScreen() {
                         }
                     }
                     if (selDay != null && selDay.hasWork) {
-                        GlowButton("Отправить отчёт", { shareText(ctx, dayReport(selDay)) }, height = 50.dp, icon = Ico.NAV, fontSize = 16.sp)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlineButton("Карта дня", {
+                                MapOverlay.request = MapRequest(
+                                    title = dayTitle(date),
+                                    sub = "${points(selDay.marks.size)} · ${km(selDay.distanceM)} · ${hm(selDay.workedMs(now))}",
+                                    date = selDay.date, from = 0L, to = null,
+                                    marks = selDay.marks, report = dayReport(selDay),
+                                )
+                            }, Modifier.weight(1f), height = 50.dp, icon = Ico.ROUTE)
+                            OutlineButton("Отчёт", { shareText(ctx, dayReport(selDay)) }, Modifier.weight(1f), height = 50.dp, icon = Ico.NAV)
+                        }
                     }
                 }
             }

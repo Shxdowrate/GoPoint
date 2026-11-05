@@ -40,6 +40,7 @@ import dev.gopoints.app.data.Events
 import dev.gopoints.app.data.Mark
 import dev.gopoints.app.data.Prefs
 import dev.gopoints.app.data.Store
+import dev.gopoints.app.data.Track
 import dev.gopoints.app.data.clock
 import dev.gopoints.app.data.hm
 import dev.gopoints.app.data.km
@@ -265,13 +266,16 @@ class TrackingService : Service() {
 
         // Пробег: шаги меньше 20 м — дрожание GPS, больше 3 км — скачок.
         val prev = lastForDistance
+        val day = Store.today.value
         if (prev == null) {
             lastForDistance = loc
+            if (day.isActive) Track.append(day.date, now, loc.latitude, loc.longitude)
         } else {
             val d = prev.distanceTo(loc)
             if (d >= 20f) {
                 if (d < 3000f) Store.addDistance(d.toDouble())
                 lastForDistance = loc
+                if (day.isActive) Track.append(day.date, now, loc.latitude, loc.longitude)
             }
         }
 
