@@ -41,6 +41,12 @@ object Localities {
         loc("Константиновка", ka("константиновк")),
         loc("Сергеевка", ka("сергеевк")),
         loc("Березовка", ka("березовк")),
+        loc("Астрахановка", ka("астрахановк")),
+        loc("Николаевка", ka("николаевк")),
+        loc("Дмитриевка", ka("дмитриевк")),
+        loc("Егорьевка", ka("егорьевк")),
+        loc("Натальино", o("натальино")),
+        loc("Новинка", ka("новинк")),
         loc("Гродеково", o("гродеково")),
         loc("Игнатьево", o("игнатьево")),
         loc("Каникурган", sk("каникурган")),
@@ -63,6 +69,26 @@ object Localities {
         loc("Ромны", listOf("ромны", "ромнах")),
     )
 
+    /**
+     * Длинные названия распознавание речи часто выдаёт двумя словами или с другим окончанием:
+     * «Верхний Благовещенск», «Верхне Благовещенское», «Усть Ивановка». Ловим по началам слов.
+     */
+    private val PAIRS = listOf(
+        Triple("верхн", "благовещ", "Верхнеблаговещенское"),
+        Triple("верх", "благовещ", "Верхнеблаговещенское"),
+        Triple("усть", "иванов", "Усть-Ивановка"),
+    )
+
+    /** Однословные написания, которые надёжно узнаются по началу слова. */
+    private val STEMS = listOf(
+        "верхнеблаговещ" to "Верхнеблаговещенское",
+        "верхблаговещ" to "Верхнеблаговещенское",
+        "усть-иванов" to "Усть-Ивановка",
+        "устьиванов" to "Усть-Ивановка",
+    )
+
+    private fun byName(n: String) = ALL.first { it.name == n }
+
     /** Слова «село», «пос.» и т. п. перед названием — выбрасываем. */
     val PREFIXES = setOf("с", "с.", "село", "селе", "п", "п.", "пос", "пос.", "посёлок", "поселок", "посёлке", "поселке", "пгт", "г", "г.", "город", "городе", "д", "деревня")
 
@@ -70,6 +96,22 @@ object Localities {
 
     /** Находит пункт среди слов; возвращает его и индексы слов (с «село», «в» перед ним), которые нужно убрать. */
     fun find(words: List<String>): Pair<Locality, Set<Int>>? {
+        fun withPrefixes(l: Locality, idx: Set<Int>): Pair<Locality, Set<Int>> {
+            val drop = idx.toMutableSet()
+            var j = idx.min() - 1
+            while (j >= 0 && (norm(words[j]) in PREFIXES || norm(words[j]) in setOf("в", "во", "на"))) { drop += j; j-- }
+            return l to drop
+        }
+        // сначала пары слов («Верхний Благовещенск», «Усть Ивановка»)
+        for (i in 0 until words.size - 1) {
+            val a = norm(words[i])
+            val b = norm(words[i + 1])
+            PAIRS.firstOrNull { (p1, p2, _) -> a.startsWith(p1) && b.startsWith(p2) }?.let { return withPrefixes(byName(it.third), setOf(i, i + 1)) }
+        }
+        for ((i, w) in words.withIndex()) {
+            val n = norm(w)
+            STEMS.firstOrNull { n.startsWith(it.first) }?.let { return withPrefixes(byName(it.second), setOf(i)) }
+        }
         for ((i, w) in words.withIndex()) {
             val n = norm(w)
             val l = ALL.firstOrNull { n in it.forms } ?: continue

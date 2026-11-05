@@ -36,18 +36,31 @@ object GeoSearch {
             val raw = Geocoder(ctx, RU).getFromLocationName(q, 5, b[0], b[1], b[2], b[3]) ?: emptyList()
             val withStreet = raw.filter { it.thoroughfare != null }
             val strict = withStreet.filter { belongs(it, l) }
-            val pick = strict.ifEmpty { withStreet.filter { it.locality == null || !l.isCity } }
-            pick.map { a ->
-                val house = a.subThoroughfare?.let { ", $it" } ?: ""
-                val town = when {
-                    strict.isNotEmpty() -> if (l.isCity) null else l.name
-                    else -> a.locality ?: a.subAdminArea
+            val found = if (strict.isNotEmpty() || l.isCity) {
+                strict.map { a ->
+                    val house = a.subThoroughfare?.let { ", $it" } ?: ""
+                    Place((if (l.isCity) "" else "${l.name}, ") + a.thoroughfare + house, a.latitude, a.longitude)
                 }
-                Place((town?.let { "$it, " } ?: "") + a.thoroughfare + house, a.latitude, a.longitude)
-            }.distinctBy { it.address }
+            } else {
+                // В селе улицу не нашли — не подставляем город, ставим точку в центр села.
+                center(ctx, l)?.let { c -> listOf(Place("${l.name}, ${street.trim()} (≈ центр села)", c.first, c.second)) } ?: emptyList()
+            }
+            found.distinctBy { it.address }
         } catch (e: Exception) {
             emptyList()
         }
+    }
+
+    /** Центр населённого пункта (если улицу в нём карта не знает). */
+    private fun center(ctx: Context, l: Locality): Pair<Double, Double>? = try {
+        @Suppress("DEPRECATION")
+        Geocoder(ctx, RU).getFromLocationName("Амурская область, ${l.name}", 3, REGION_BOX[0], REGION_BOX[1], REGION_BOX[2], REGION_BOX[3])
+            ?.firstOrNull { a ->
+                val stem = Localities.norm(l.name).take(6)
+                listOfNotNull(a.locality, a.subLocality, a.featureName, a.getAddressLine(0)).any { Localities.norm(it).contains(stem) }
+            }?.let { it.latitude to it.longitude }
+    } catch (e: Exception) {
+        null
     }
 
     /** Подсказки для поля адреса. */
