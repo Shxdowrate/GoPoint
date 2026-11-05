@@ -15,18 +15,15 @@ object GeoSearch {
     private fun inBlag(a: Address) =
         listOfNotNull(a.locality, a.subAdminArea).any { Localities.norm(it) == "благовещенск" }
 
-    private fun mentions(a: Address, l: Locality): Boolean {
-        val stem = Localities.norm(l.name).take(6)
-        val names = listOfNotNull(a.locality, a.subLocality, a.subAdminArea, a.featureName).map { Localities.norm(it) }
-        return names.any { it.startsWith(stem) } || Localities.norm(a.getAddressLine(0) ?: "").contains(stem)
-    }
+    /** Какие пункты карта упомянула в адресе — сверяем целыми словами по справочнику. */
+    private fun places(a: Address): Set<Locality> =
+        listOfNotNull(a.locality, a.subLocality, a.subAdminArea, a.featureName, a.getAddressLine(0))
+            .flatMap { Localities.mentionedIn(it) }.toSet()
 
-    private fun belongs(a: Address, l: Locality): Boolean {
-        val line = Localities.norm(a.getAddressLine(0) ?: "")
-        return if (l.isCity) {
-            inBlag(a) && CITY_DISTRICTS.none { line.contains(Localities.norm(it).take(6)) }
-        } else mentions(a, l)
-    }
+    private fun mentions(a: Address, l: Locality): Boolean = l in places(a)
+
+    private fun belongs(a: Address, l: Locality): Boolean =
+        if (l.isCity) inBlag(a) && places(a).none { it.inCity } else mentions(a, l)
 
     @Suppress("DEPRECATION")
     private fun geocode(ctx: Context, q: String, box: DoubleArray): List<Address> =

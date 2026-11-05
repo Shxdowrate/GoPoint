@@ -130,6 +130,18 @@ object Localities {
         return null
     }
 
+    /** Все пункты, упомянутые в тексте (целыми словами — «Белогорье» не спутать с «Белогорском»). */
+    fun mentionedIn(text: String): Set<Locality> {
+        val words = text.split(Regex("[\\s,.()]+")).filter { it.isNotBlank() }.toMutableList()
+        val out = mutableSetOf<Locality>()
+        while (true) {
+            val (l, idx) = find(words) ?: break
+            out += l
+            idx.sortedDescending().forEach { words.removeAt(it) }
+        }
+        return out
+    }
+
     /** Пункт в тексте адреса («с. Марково, ул. Центральная, 5»). */
     fun inText(text: String): Locality? =
         find(text.split(Regex("[\\s,]+")).filter { it.isNotBlank() })?.first
