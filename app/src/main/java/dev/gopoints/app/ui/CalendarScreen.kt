@@ -87,6 +87,7 @@ fun CalendarScreen() {
     val days = rememberMonth(ym)
     val now = rememberNow(30_000L)
     val worked = days.values.filter { it.hasWork }
+    var sheet by remember { mutableStateOf<Long?>(null) }
 
     LazyColumn(
         Modifier.fillMaxSize(),
@@ -168,23 +169,17 @@ fun CalendarScreen() {
                     GCard {
                         selDay.marks.forEachIndexed { i, m ->
                             if (i > 0) Divider(start = 66.dp)
-                            Row(
-                                Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            ) {
-                                Tile(clock(m.time))
-                                Column(Modifier.weight(1f)) {
-                                    Text(m.address ?: "%.5f, %.5f".format(m.lat, m.lon), color = C.Ink, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                    val sub = listOfNotNull(m.note, if (m.auto) "авто" else null).joinToString(" · ")
-                                    if (sub.isNotEmpty()) Text(sub, color = C.Muted, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                                }
-                                selDay.stayMs(m, now)?.let { Text(mins(it), color = C.Muted, fontSize = 14.sp) }
-                            }
+                            MarkRow(selDay, m, now, delayMs = 0) { sheet = m.id }
                         }
                     }
                 }
             }
+        }
+    }
+    val sd = days[sel]
+    sheet?.let { id ->
+        sd?.marks?.firstOrNull { it.id == id }?.let { m ->
+            MarkSheet(sd, m, onNote = null, onDelete = { Store.deleteMark(sd.date, id); sheet = null }, onClose = { sheet = null })
         }
     }
 }

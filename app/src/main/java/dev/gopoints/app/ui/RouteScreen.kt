@@ -57,6 +57,7 @@ import dev.gopoints.app.data.hm
 import dev.gopoints.app.data.km
 import dev.gopoints.app.data.plural
 import dev.gopoints.app.route.GeoState
+import dev.gopoints.app.route.Place
 import dev.gopoints.app.route.Planner
 import dev.gopoints.app.route.RouteActions
 import dev.gopoints.app.route.RouteStore
@@ -73,6 +74,7 @@ private data class Draft(
     val window: String?,
     val complete: Boolean,
     val editId: Long? = null,
+    val place: Place? = null,
 )
 
 private fun visitDone(v: Visit, marks: List<Mark>): Boolean =
@@ -94,12 +96,15 @@ fun RouteScreen(onVoice: () -> Unit) {
 
     fun save(d: Draft) {
         d.editId?.let { RouteStore.remove(it) }
+        val p = d.place?.takeIf { it.address == d.address }
         val s = Stop(
             id = System.currentTimeMillis(),
-            name = d.name.trim().ifBlank { "Без названия" },
+            name = d.name.trim().ifBlank { p?.address ?: d.address.trim() },
             address = d.address.trim(),
             waybill = d.waybill,
             window = d.window?.trim()?.takeIf { it.isNotEmpty() },
+            lat = p?.lat, lon = p?.lon,
+            geo = if (p != null) GeoState.OK else GeoState.PENDING,
         )
         scope.launch { RouteActions.addAndLocate(ctx, s) }
     }
@@ -141,9 +146,9 @@ fun RouteScreen(onVoice: () -> Unit) {
             GCard(Modifier.rise(70).shadow(16.dp, CardShape, ambientColor = C.Acc, spotColor = C.AccDeep)) {
                 Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 18.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                     if (st.stops.isEmpty()) {
-                        Text("Продиктуйте точки", color = C.Ink, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+                        Text("Продиктуйте адреса", color = C.Ink, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
                         Text(
-                            "«Колосок, Ленина 145» — «да» — следующая. Сёла и города области тоже: «Марково, Центральная 5». GoPoints найдёт адреса и построит порядок объезда.",
+                            "Продиктуйте адреса подряд — каждый станет строкой и сразу проверится по карте. Сёла и города области тоже: «Марково, Центральная 5».",
                             color = C.Muted, fontSize = 14.sp,
                         )
                     } else {
@@ -169,12 +174,12 @@ fun RouteScreen(onVoice: () -> Unit) {
                         }
                     }
                     when {
-                        st.stops.isEmpty() -> GlowButton("Добавить голосом", onVoice, height = 60.dp, icon = Ico.MIC, fontSize = 17.sp)
+                        st.stops.isEmpty() -> GlowButton("Диктовать адреса", onVoice, height = 60.dp, icon = Ico.MIC, fontSize = 17.sp)
                         !st.optimized -> GlowButton("Построить маршрут", { build() }, height = 60.dp, icon = Ico.ROUTE, fontSize = 17.sp)
                         else -> GlowButton("Открыть в Навигаторе", { Planner.openNavigator(ctx, ahead) }, height = 60.dp, icon = Ico.NAV, fontSize = 17.sp)
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (st.stops.isNotEmpty()) OutlineButton("Голосом", onVoice, Modifier.weight(1f), icon = Ico.MIC)
+                        if (st.stops.isNotEmpty()) OutlineButton("Диктовка", onVoice, Modifier.weight(1f), icon = Ico.MIC)
                         OutlineButton("Вручную", { drafts += Draft("", "", null, null, complete = true) }, Modifier.weight(1f), icon = Ico.EDIT)
                     }
                     if (st.optimized && st.stops.isNotEmpty()) {
@@ -397,6 +402,7 @@ private fun DraftDialog(d: Draft, onSave: (Draft) -> Unit, onSkip: () -> Unit, o
     var name by remember(d) { mutableStateOf(d.name) }
     var address by remember(d) { mutableStateOf(d.address) }
     var window by remember(d) { mutableStateOf(d.window ?: "") }
+    var picked by remember(d) { mutableStateOf(d.place) }
     Dialog(onDismissRequest = onSkip, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Column(
             Modifier.padding(16.dp).fillMaxWidth()
@@ -415,12 +421,12 @@ private fun DraftDialog(d: Draft, onSave: (Draft) -> Unit, onSkip: () -> Unit, o
                 color = C.Ink, fontSize = 22.sp, fontWeight = FontWeight.Bold,
             )
             if (!d.complete) Text("Распознано не всё — проверьте и допишите", color = C.Warn, fontSize = 14.sp)
-            Field("Грузополучатель", name) { name = it }
-            Field("Адрес доставки", address, hint = "Зейская, 120 или Марково, Центральная, 5") { address = it }
-            Field("Время приёмки", window, hint = "до 14:00") { window = it }
+            GField("Магазин (необязательно)", name) { name = it }
+            AddressField(address, picked, onChange = { address = it }, onPick = { picked = it; address = it.address })
+            GField("Время приёмки", window, hint = "до 14:00") { window = it }
             GlowButton(
                 if (d.editId != null) "Сохранить" else "Добавить в маршрут",
-                { if (address.isNotBlank()) onSave(d.copy(name = name, address = address, window = window)) },
+                { if (address.isNotBlank()) onSave(d.copy(name = name, address = address, window = window, place = picked)) },
                 height = 54.dp, fontSize = 17.sp,
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -429,23 +435,4 @@ private fun DraftDialog(d: Draft, onSave: (Draft) -> Unit, onSkip: () -> Unit, o
             }
         }
     }
-}
-
-@Composable
-private fun Field(label: String, value: String, hint: String? = null, onChange: (String) -> Unit) {
-    OutlinedTextField(
-        value = value,
-        onValueChange = onChange,
-        modifier = Modifier.fillMaxWidth(),
-        label = { Text(label) },
-        placeholder = hint?.let { { Text(it, color = C.Chev) } },
-        singleLine = true,
-        shape = RoundedCornerShape(12.dp),
-        colors = OutlinedTextFieldDefaults.colors(
-            focusedBorderColor = C.Acc, unfocusedBorderColor = C.Edge,
-            focusedTextColor = C.Ink, unfocusedTextColor = C.Ink,
-            focusedLabelColor = C.Acc, unfocusedLabelColor = C.Muted,
-            cursorColor = C.Acc, focusedContainerColor = Color.Black, unfocusedContainerColor = Color.Black,
-        ),
-    )
 }

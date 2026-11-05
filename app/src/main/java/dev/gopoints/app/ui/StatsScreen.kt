@@ -61,6 +61,7 @@ import dev.gopoints.app.data.hm
 import dev.gopoints.app.data.km
 import dev.gopoints.app.data.mins
 import kotlinx.coroutines.Dispatchers
+import kotlin.math.roundToInt
 import kotlinx.coroutines.withContext
 import java.time.DayOfWeek
 import java.time.LocalDate
@@ -71,6 +72,12 @@ import java.time.format.TextStyle as JTextStyle
 private class Bucket(val label: String, val days: List<DayLog>) {
     fun minutes(now: Long) = days.sumOf { it.workedMs(now) }.div(60_000).toInt()
     val points get() = days.sumOf { it.marks.size }
+    val km get() = days.sumOf { it.distanceM } / 1000.0
+    /** Средний простой на точке, мин. */
+    fun avgStay(now: Long): Int {
+        val st = days.flatMap { d -> d.marks.mapNotNull { d.stayMs(it, now) } }
+        return if (st.isEmpty()) 0 else (st.sum() / st.size / 60_000).toInt()
+    }
 }
 
 private enum class View { BARS, LINE, AREA }
@@ -170,12 +177,53 @@ fun StatsScreen() {
             )
         }
         item {
-            GCard(Modifier.rise(240)) {
-                StatRow("Пробег", km(all.sumOf { it.distanceM }))
-                Divider()
-                StatRow("Среднее время на точке", if (stays.isEmpty()) "—" else mins(stays.sum() / stays.size))
-                Divider()
+            ChartCard(
+                title = "Простой на точке",
+                total = if (stays.isEmpty()) "—" else mins(stays.sum() / stays.size),
+                sub = "в среднем",
+                values = buckets.map { it.avgStay(now).toFloat() },
+                valueLabels = buckets.map { val m = it.avgStay(now); if (m == 0) "—" else "$m" },
+                labels = buckets.map { it.label },
+                color = Color(0xFF8FE0A6),
+                barBrush = { top, bottom -> Brush.verticalGradient(listOf(Color(0xFFC8F5D4), Color(0xFF4CC27A)), startY = top, endY = bottom) },
+                view = view, animKey = key + "s", height = 104.dp, month = month,
+                modifier = Modifier.rise(240),
+            )
+        }
+        item {
+            val totalKm = all.sumOf { it.distanceM }
+            ChartCard(
+                title = "Пробег",
+                total = km(totalKm),
+                sub = "ср. ${km(if (shifts > 0) totalKm / shifts else 0.0)} за смену",
+                values = buckets.map { it.km.toFloat() },
+                valueLabels = buckets.map { if (it.km < 0.5) "—" else "${it.km.roundToInt()}" },
+                labels = buckets.map { it.label },
+                color = Color(0xFF7FB8FF),
+                barBrush = { top, bottom -> Brush.verticalGradient(listOf(Color(0xFFCFE4FF), Color(0xFF4C8DFF)), startY = top, endY = bottom) },
+                view = view, animKey = key + "k", height = 104.dp, month = month,
+                modifier = Modifier.rise(300),
+            )
+        }
+        item {
+            val totalKm = all.sumOf { it.distanceM }
+            val longest = all.flatMap { d -> d.marks.mapNotNull { m -> d.stayMs(m, now)?.let { m to it } } }.maxByOrNull { it.second }
+            val hours = totalMin / 60.0
+            GCard(Modifier.rise(360)) {
                 StatRow("Смен", "$shifts")
+                Divider()
+                StatRow("Средняя смена", if (shifts > 0) hm(totalMin * 60_000L / shifts) else "—")
+                Divider()
+                StatRow("Точек в час", if (hours > 0.1) String.format(RU, "%.1f", totalPts / hours) else "—")
+                Divider()
+                StatRow("Км на точку", if (totalPts > 0) String.format(RU, "%.1f", totalKm / 1000 / totalPts) else "—")
+                Divider()
+                StatRow("Время на точках", hm(stays.sum()) + if (totalMin > 0) " · ${(stays.sum() / 600 / totalMin.coerceAtLeast(1)).coerceAtMost(100)}%" else "")
+                Divider()
+                StatRow(
+                    "Самый долгий простой",
+                    longest?.let { (m, ms) -> mins(ms) + " · " + (m.address ?: "") } ?: "—",
+                )
             }
         }
     }
@@ -185,7 +233,7 @@ fun StatsScreen() {
 private fun StatRow(title: String, value: String) {
     Row(Modifier.fillMaxWidth().heightIn(min = 52.dp).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(title, Modifier.weight(1f), color = C.Ink, fontSize = 16.sp)
-        Text(value, color = C.Muted, fontSize = 14.sp)
+        Text(value, color = C.Muted, fontSize = 14.sp, maxLines = 1, modifier = Modifier.padding(start = 12.dp))
     }
 }
 

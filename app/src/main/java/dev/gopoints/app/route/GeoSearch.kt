@@ -50,12 +50,21 @@ object GeoSearch {
         }
     }
 
+    /** Подсказки для поля адреса. */
+    suspend fun suggest(ctx: Context, text: String): List<Place> {
+        val l = Localities.inText(text) ?: Localities.CITY
+        val rest = clean(text, l)
+        return find(ctx, l, rest).take(5)
+    }
+
+    private fun clean(address: String, l: Locality) =
+        Localities.stripFrom(Localities.stripFrom(address, l), Localities.CITY)
+            .replace(Regex("(?iu)^(г|с|п|пос|пгт)\\.?\\s+"), "")
+            .ifBlank { address }
+
     /** Координаты для адреса, введённого текстом («Марково, Центральная 5»). */
     suspend fun locate(ctx: Context, address: String): Place? {
         val l = Localities.inText(address) ?: Localities.CITY
-        val rest = Localities.stripFrom(Localities.stripFrom(address, l), Localities.CITY)
-            .replace(Regex("(?iu)^(г|с|п|пос|пгт)\\.?\\s+"), "")
-            .ifBlank { address }
-        return find(ctx, l, rest).firstOrNull()
+        return find(ctx, l, clean(address, l)).firstOrNull()
     }
 }

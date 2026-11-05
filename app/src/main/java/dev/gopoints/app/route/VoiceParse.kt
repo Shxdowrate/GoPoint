@@ -49,6 +49,29 @@ object VoiceParse {
         return null
     }
 
+    /**
+     * Одна фраза диктовки может содержать несколько адресов подряд:
+     * «Колосок Ленина 145 Продукты Зейская 120 Марково Центральная 5» → три строки.
+     * Режем после номера дома, если дальше не продолжение номера (а/б, дробь, корпус).
+     */
+    fun chunks(text: String): List<String> {
+        val tokens = text.replace(",", " , ").split(Regex("\\s+")).filter { it.isNotBlank() }
+        val out = mutableListOf<MutableList<String>>(mutableListOf())
+        val houseRe = Regex("^\\d+[а-яА-Я]?(/\\d+)?$")
+        val cont = setOf("а", "б", "в", "г", "дробь", "корпус", "корп", "строение", "стр", "литер")
+        for ((i, t) in tokens.withIndex()) {
+            if (t == ",") continue
+            out.last() += t
+            val next = tokens.getOrNull(i + 1)?.lowercase(RU)
+            if (houseRe.matches(t) && next != null && next != "," && next !in cont && !houseRe.matches(next)) {
+                out += mutableListOf<String>()
+            } else if (houseRe.matches(t) && next == ",") {
+                out += mutableListOf<String>()
+            }
+        }
+        return out.map { it.joinToString(" ") }.filter { it.isNotBlank() }
+    }
+
     fun split(text: String): Spoken {
         var tokens = text.replace(",", " ").replace("«", " ").replace("»", " ")
             .split(Regex("\\s+")).filter { it.isNotBlank() }.toMutableList()

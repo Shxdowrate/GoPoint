@@ -23,10 +23,10 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
 
       - name: Build APK
-        run: ./gradlew --no-daemon assembleDebug
+        run: ./gradlew --no-daemon assembleRelease
 
       - name: Rename APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk GoPoints-${{ github.run_number }}.apk
+        run: cp app/build/outputs/apk/release/app-release.apk GoPoints-${{ github.run_number }}.apk
 
       - uses: actions/upload-artifact@v4
         with:
@@ -39,7 +39,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
-          name: GoPoints 0.3.${{ github.run_number }}
+          name: GoPoints 0.4.${{ github.run_number }}
           files: GoPoints-${{ github.run_number }}.apk
           make_latest: true
           body: |

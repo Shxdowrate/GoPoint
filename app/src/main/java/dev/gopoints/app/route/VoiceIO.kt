@@ -25,8 +25,12 @@ import kotlin.coroutines.resume
  */
 class VoiceIO(ctx: Context) {
     private val ready = CompletableDeferred<Boolean>()
-    private val tts: TextToSpeech = TextToSpeech(ctx.applicationContext) { status ->
-        ready.complete(status == TextToSpeech.SUCCESS)
+    private val appCtx = ctx.applicationContext
+    private var ttsMade = false
+    /** Синтез речи создаём только если понадобится — он тяжёлый. */
+    private val tts: TextToSpeech by lazy {
+        ttsMade = true
+        TextToSpeech(appCtx) { status -> ready.complete(status == TextToSpeech.SUCCESS) }
     }
     private val recognizer: SpeechRecognizer = SpeechRecognizer.createSpeechRecognizer(ctx)
     private var waiting: CancellableContinuation<String?>? = null
@@ -134,12 +138,12 @@ class VoiceIO(ctx: Context) {
 
     fun stopAll() {
         recognizer.cancel()
-        tts.stop()
+        if (ttsMade) tts.stop()
     }
 
     fun release() {
         tones?.release()
         recognizer.destroy()
-        tts.shutdown()
+        if (ttsMade) tts.shutdown()
     }
 }

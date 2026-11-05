@@ -67,7 +67,7 @@ fun TodayScreen(onSettings: () -> Unit, onStart: () -> Unit, onVoiceNote: (Long)
     val ctx = LocalContext.current
     val now = rememberNow()
     LaunchedEffect(now / 60_000) { Store.refresh() }
-    var expanded by remember { mutableStateOf<Long?>(null) }
+    var sheet by remember { mutableStateOf<Long?>(null) }
     var openShift by remember { mutableStateOf<Int?>(null) }
     val shift = day.shifts.lastOrNull()
     val shiftMarks = shift?.let { day.marksIn(it) } ?: emptyList()
@@ -104,14 +104,7 @@ fun TodayScreen(onSettings: () -> Unit, onStart: () -> Unit, onVoiceNote: (Long)
                     }
                     shiftMarks.reversed().forEachIndexed { i, m ->
                         if (i > 0) Divider(start = 66.dp)
-                        MarkRow(
-                            day, m, now,
-                            expanded = expanded == m.id,
-                            delayMs = 260 + i * 70,
-                            onClick = { expanded = if (expanded == m.id) null else m.id },
-                            onNote = { onVoiceNote(m.id) },
-                            onDelete = { Store.deleteMark(day.date, m.id); expanded = null },
-                        )
+                        MarkRow(day, m, now, delayMs = 260 + i * 70) { sheet = m.id }
                     }
                 }
             }
@@ -142,10 +135,7 @@ fun TodayScreen(onSettings: () -> Unit, onStart: () -> Unit, onVoiceNote: (Long)
                                 Column {
                                     ms.reversed().forEach { m ->
                                         Divider(start = 66.dp)
-                                        MarkRow(day, m, now, expanded = expanded == m.id, delayMs = 0,
-                                            onClick = { expanded = if (expanded == m.id) null else m.id },
-                                            onNote = { onVoiceNote(m.id) },
-                                            onDelete = { Store.deleteMark(day.date, m.id); expanded = null })
+                                        MarkRow(day, m, now, delayMs = 0) { sheet = m.id }
                                     }
                                 }
                             }
@@ -153,6 +143,11 @@ fun TodayScreen(onSettings: () -> Unit, onStart: () -> Unit, onVoiceNote: (Long)
                     }
                 }
             }
+        }
+    }
+    sheet?.let { id ->
+        day.marks.firstOrNull { it.id == id }?.let { m ->
+            MarkSheet(day, m, onNote = onVoiceNote, onDelete = { Store.deleteMark(day.date, id); sheet = null }, onClose = { sheet = null })
         }
     }
 }
@@ -252,47 +247,28 @@ private fun StatusCard(day: DayLog, now: Long, onStart: () -> Unit, onVoiceNote:
 }
 
 @Composable
-private fun MarkRow(
-    day: DayLog,
-    m: Mark,
-    now: Long,
-    expanded: Boolean,
-    delayMs: Int,
-    onClick: () -> Unit,
-    onNote: () -> Unit,
-    onDelete: () -> Unit,
-) {
+fun MarkRow(day: DayLog, m: Mark, now: Long, delayMs: Int, onClick: () -> Unit) {
     val stay = day.stayMs(m, now)
     val live = day.isActive && m.leftAt == null && stay != null
-    val title = m.address ?: if (now - m.id < 60_000) "Определяю адрес…" else String.format(Locale.US, "%.5f, %.5f", m.lat, m.lon)
-    val sub = listOfNotNull(m.note, if (m.auto) "авто" else null).joinToString(" · ")
-    Column(Modifier.rise(delayMs)) {
-        Row(
-            Modifier.fillMaxWidth().clickable(onClick = onClick).padding(start = 14.dp, end = 14.dp, top = 10.dp, bottom = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Tile(clock(m.time), live = live)
-            Column(Modifier.weight(1f)) {
-                Text(title, color = C.Ink, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                if (sub.isNotEmpty()) Text(sub, color = C.Muted, fontSize = 13.sp, maxLines = if (expanded) 4 else 1, overflow = TextOverflow.Ellipsis)
-            }
-            if (stay != null) {
-                Text(
-                    if (live) "сейчас · ${mins(stay)}" else mins(stay),
-                    color = if (live) C.Acc else C.Muted, fontSize = 14.sp,
-                    style = TextStyle(shadow = if (live) Shadow(C.Acc.copy(alpha = 0.6f), blurRadius = 14f) else null),
-                )
-            }
+    val name = routeNameFor(m)
+    val addr = m.address ?: if (now - m.id < 60_000) "Определяю адрес…" else coords(m)
+    val sub = listOfNotNull(if (name != null) addr else null, m.note, if (m.auto) "авто" else null).joinToString(" · ")
+    Row(
+        Modifier.fillMaxWidth().rise(delayMs).clickable(onClick = onClick).padding(start = 14.dp, end = 14.dp, top = 10.dp, bottom = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Tile(clock(m.time), live = live)
+        Column(Modifier.weight(1f)) {
+            Text(name ?: addr, color = C.Ink, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (sub.isNotEmpty()) Text(sub, color = C.Muted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        AnimatedVisibility(expanded) {
-            Row(
-                Modifier.fillMaxWidth().padding(start = 66.dp, end = 14.dp, bottom = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                OutlineButton("Заметка", onNote, Modifier.weight(1f), height = 40.dp, icon = Ico.MIC)
-                OutlineButton("Удалить", onDelete, Modifier.weight(1f), color = C.Bad, height = 40.dp, icon = Ico.TRASH)
-            }
+        if (stay != null) {
+            Text(
+                if (live) "стоите · ${mins(stay)}" else mins(stay),
+                color = if (live) C.Acc else C.Muted, fontSize = 14.sp,
+                style = TextStyle(shadow = if (live) Shadow(C.Acc.copy(alpha = 0.6f), blurRadius = 14f) else null),
+            )
         }
     }
 }

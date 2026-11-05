@@ -80,6 +80,10 @@ class TrackingService : Service() {
         private const val STOP_RADIUS = 60f
         /** Отъехал от точки дальше — время на точке закончилось, м. */
         private const val LEAVE_RADIUS = 80f
+        /** Стоянка короче минуты — не стоянка (светофор). */
+        private const val MIN_STOP = 60_000L
+        /** Сколько после отъезда громкость ×2 ещё относится к прошедшей стоянке. */
+        private const val PAST_WINDOW = 5 * 60_000L
         /** Ждём ответа на «отметить?» перед автоотметкой. */
         private const val AUTO_TIMEOUT = 120_000L
 
@@ -106,6 +110,10 @@ class TrackingService : Service() {
     private var updating = false
     private var current: Location? = null
     private var lastForDistance: Location? = null
+
+    /** Недавно закончившаяся стоянка. */
+    private data class PastStop(val loc: Location, val arrivedAt: Long, val leftAt: Long)
+    private var lastStop: PastStop? = null
 
     private var anchor: Location? = null
     private var anchorAt = 0L
@@ -242,6 +250,8 @@ class TrackingService : Service() {
 
     // ---------------------------------------------------------------- GPS
 
+    private fun distanceTo(m: Mark, l: Location): Float = distance(m, l)
+
     private fun distance(m: Mark, l: Location): Float {
         val r = FloatArray(1)
         Location.distanceBetween(m.lat, m.lon, l.latitude, l.longitude, r)
@@ -276,6 +286,8 @@ class TrackingService : Service() {
         // Стоянка: держимся в радиусе STOP_RADIUS дольше порога — спрашиваем.
         val a = anchor
         if (a == null || a.distanceTo(loc) > STOP_RADIUS) {
+            // Уехали со стоянки — запоминаем её: громкость ×2 в ближайшие минуты отметит именно её.
+            if (a != null && now - anchorAt >= MIN_STOP) lastStop = PastStop(a, anchorAt, now)
             anchor = loc
             anchorAt = now
             stopHandled = false
@@ -291,6 +303,13 @@ class TrackingService : Service() {
 
     // ---------------------------------------------------------------- отметки
 
+    /**
+     * Ручная отметка (кнопка, громкость, гарнитура). Отмечается стоянка целиком:
+     *  • стоим (дольше минуты на месте) — время с момента остановки, простой идёт, пока не поедем;
+     *  • только что уехали (до 5 минут) — отмечается прошедшая стоянка: прибытие и отъезд как были;
+     *  • иначе — текущее место и время.
+     * Если эта стоянка уже отмечена (например, автоматически) — второй точки не будет.
+     */
     private fun markNow() {
         val l = current
         if (l == null) {
@@ -298,7 +317,30 @@ class TrackingService : Service() {
             notifyConfirm(0L, "Нет GPS", "Подождите, пока определится местоположение", undo = false)
             return
         }
-        addMark(l, System.currentTimeMillis(), auto = false)
+        val now = System.currentTimeMillis()
+        val shiftStart = Store.today.value.shifts.lastOrNull()?.start ?: 0L
+        val a = anchor
+        val past = lastStop
+        val (where, from, left) = when {
+            a != null && a.distanceTo(l) <= STOP_RADIUS && now - anchorAt >= MIN_STOP -> Triple(a, anchorAt, null)
+            past != null && now - past.leftAt <= PAST_WINDOW -> Triple(past.loc, past.arrivedAt, past.leftAt)
+            else -> Triple(l, now, null)
+        }
+        val time = maxOf(from, shiftStart)
+        val dup = Store.today.value.marks.lastOrNull { m ->
+            distanceTo(m, where) < 100f && m.time >= time - 2 * 60_000L && (m.leftAt == null || m.leftAt >= time)
+        }
+        if (dup != null) {
+            if (dup.auto) Store.update { d -> d.copy(marks = d.marks.map { if (it.id == dup.id) it.copy(auto = false) else it }) }
+            stopHandled = true
+            autoJob?.cancel()
+            nm.cancel(ALERT_ID)
+            vibrateAlready()
+            notifyConfirm(dup.id, "Эта точка уже отмечена", dup.address ?: "с ${clock(dup.time)}", undo = false)
+            return
+        }
+        if (left != null) lastStop = null
+        addMark(where, time, auto = false, leftAt = left)
     }
 
     private fun markAtAnchor(auto: Boolean) {
@@ -309,14 +351,23 @@ class TrackingService : Service() {
         addMark(a, t, auto)
     }
 
-    private fun addMark(l: Location, time: Long, auto: Boolean) {
+    private fun addMark(l: Location, time: Long, auto: Boolean, leftAt: Long? = null) {
         val id = System.currentTimeMillis()
-        Store.update { it.copy(marks = it.marks + Mark(id, time, l.latitude, l.longitude, auto = auto)) }
+        Store.update { d ->
+            (d.copy(marks = d.marks + Mark(id, time, l.latitude, l.longitude, auto = auto, leftAt = leftAt))).let { nd ->
+                nd.copy(marks = nd.marks.sortedBy { it.time })
+            }
+        }
         stopHandled = true
         autoJob?.cancel()
         vibrate(ok = true)
         Events.marked.tryEmit(id)
-        val title = if (auto) "Отмечено автоматически" else "Отмечено"
+        val title = when {
+            auto -> "Отмечено автоматически"
+            leftAt != null -> "Отмечена стоянка ${clock(time)}–${clock(leftAt)}"
+            System.currentTimeMillis() - time > 60_000L -> "Отмечено · стоите с ${clock(time)}"
+            else -> "Отмечено"
+        }
         notifyConfirm(id, title, "Определяю адрес…", undo = true, loud = auto)
         updateNotification()
         scope.launch {
@@ -494,6 +545,15 @@ class TrackingService : Service() {
             .setContentIntent(openApp())
         if (undo) b.addAction(0, "Отменить", pending(ACT_UNDO, id))
         nm.notify(CONFIRM_ID, b.build())
+    }
+
+    /** Три коротких — «уже отмечено». */
+    private fun vibrateAlready() = vibratePattern(longArrayOf(0L, 40L, 60L, 40L, 60L, 40L))
+
+    private fun vibratePattern(p: LongArray) {
+        val v: Vibrator = if (Build.VERSION.SDK_INT >= 31) getSystemService(VibratorManager::class.java).defaultVibrator
+        else @Suppress("DEPRECATION") getSystemService(Vibrator::class.java)
+        v.vibrate(VibrationEffect.createWaveform(p, -1))
     }
 
     private fun vibrate(ok: Boolean) {

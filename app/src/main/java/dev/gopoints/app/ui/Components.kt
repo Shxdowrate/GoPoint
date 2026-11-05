@@ -105,8 +105,13 @@ fun GlowButton(
         modifier
             .fillMaxWidth()
             .height(height)
-            .shadow((8 + 16 * glow).dp, Pill, ambientColor = C.Acc, spotColor = C.AccDeep)
-            .clip(Pill)
+            .graphicsLayer {
+                shadowElevation = (8 + 16 * glow).dp.toPx()
+                shape = Pill
+                clip = true
+                ambientShadowColor = C.Acc
+                spotShadowColor = C.AccDeep
+            }
             .background(AccBrush)
             .drawWithContent {
                 drawContent()
@@ -210,20 +215,30 @@ fun Chip(text: String, selected: Boolean, onClick: () -> Unit) {
     }
 }
 
-/** Плитка 40×40 в строке списка; live — светится. */
+/** Плитка 40×40 в строке списка; live — светится (анимация только у живой плитки). */
 @Composable
 fun Tile(text: String, live: Boolean = false, color: Color = C.Ink, bg: Color = C.Card2) {
+    if (live) {
+        LiveTile(text)
+        return
+    }
+    Box(
+        Modifier.size(40.dp).clip(RoundedCornerShape(12.dp)).background(bg),
+        contentAlignment = Alignment.Center,
+    ) { Text(text, color = color, fontSize = 13.sp, fontWeight = FontWeight.SemiBold) }
+}
+
+@Composable
+private fun LiveTile(text: String) {
     val t = rememberInfiniteTransition(label = "tile")
     val g by t.animateFloat(0f, 1f, infiniteRepeatable(tween(1200, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "g")
     val shape = RoundedCornerShape(12.dp)
     Box(
         Modifier.size(40.dp)
-            .then(if (live) Modifier.shadow((4 + 12 * g).dp, shape, ambientColor = C.Acc, spotColor = C.Acc) else Modifier)
-            .clip(shape).background(if (live) C.AccTile else bg),
+            .graphicsLayer { shadowElevation = (4 + 12 * g).dp.toPx(); this.shape = shape; clip = true; ambientShadowColor = C.Acc; spotShadowColor = C.Acc }
+            .background(C.AccTile),
         contentAlignment = Alignment.Center,
-    ) {
-        Text(text, color = if (live) C.Acc else color, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-    }
+    ) { Text(text, color = C.Acc, fontSize = 13.sp, fontWeight = FontWeight.SemiBold) }
 }
 
 @Composable
